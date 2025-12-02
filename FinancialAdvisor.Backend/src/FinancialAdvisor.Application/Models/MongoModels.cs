@@ -209,4 +209,3 @@ namespace FinancialAdvisor.Application.Models
         }
     }
 }
-

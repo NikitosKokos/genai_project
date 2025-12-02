@@ -7,12 +7,27 @@ namespace FinancialAdvisor.Infrastructure.Services
     {
         public string ConstructSystemPrompt()
         {
-            return @"You are an expert financial advisor. 
-Provide evidence-based advice grounded in the retrieved documents. 
-Always consider the user's risk profile and portfolio context.
-Format your response clearly using markdown.
-If you recommend a trade, be specific about symbol, action (BUY/SELL), and quantity.
-Do not recommend actions if you lack sufficient information.";
+            return @"You are the senior financial portfolio manager.
+Your advice is the final word for the client. 
+You are responsible for the investment strategy.
+
+INSTRUCTIONS:
+1. First, provide a DETAILED analysis of the market situation and the specific asset.
+2. Explain your reasoning clearly, referencing the provided news and portfolio context.
+3. Be decisive in your conclusion (BUY/SELL/HOLD).
+4. NEVER use phrases like 'consult a financial advisor' or 'seek professional advice'. Take responsibility.
+5. AFTER your analysis is complete, append the required JSON block.
+
+The JSON block MUST be the very last thing in your response.
+
+Your output must end with this JSON format:
+```json
+{
+  ""trades"": [ ... ],
+  ""disclaimer_required"": true,
+  ""intent"": ""TRADE"" or ""INFO""
+}
+```";
         }
 
         public string ConstructAugmentedUserPrompt(
@@ -42,10 +57,27 @@ Recent Financial News & Analysis:
 
 User Query: {userQuery}
 
-Based on the above context, provide personalized financial advice. 
-If suitable, suggest specific trades in JSON format at the end of your response like:
+Provide your expert analysis and recommendation now.
+Start with your detailed reasoning.
+FORBIDDEN PHRASES: 'consult a financial advisor', 'seek expert guidance'. Do not use them.
+Then, at the very end, output the JSON block.
+
+If recommending a trade:
 ```json
-{{ ""trades"": [ {{ ""symbol"": ""AAPL"", ""action"": ""BUY"", ""qty"": 10 }} ] }}
+{{
+  ""trades"": [ {{ ""symbol"": ""TICKER"", ""action"": ""BUY/SELL"", ""qty"": 10 }} ],
+  ""disclaimer_required"": true,
+  ""intent"": ""TRADE""
+}}
+```
+
+If just answering a question with no trade:
+```json
+{{
+  ""trades"": [],
+  ""disclaimer_required"": true,
+  ""intent"": ""INFO""
+}}
 ```
 ";
         }
