@@ -24,7 +24,7 @@ namespace FinancialAdvisor.Infrastructure.Services
         {
             _httpClient = httpClient;
             _ollamaEndpoint = configuration["OLLAMA_ENDPOINT"] ?? "http://ollama:11434";
-            _modelName = configuration["OLLAMA_MODEL"] ?? "mistral";
+            _modelName = configuration["OLLAMA_MODEL"] ?? "deepseek-r1:8b";
             _logger = logger;
         }
 
