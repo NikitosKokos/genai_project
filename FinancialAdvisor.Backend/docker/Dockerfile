@@ -6,6 +6,9 @@ EXPOSE 443
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
 COPY ["src/FinancialAdvisor.Api/FinancialAdvisor.Api.csproj", "src/FinancialAdvisor.Api/"]
+COPY ["src/FinancialAdvisor.Application/FinancialAdvisor.Application.csproj", "src/FinancialAdvisor.Application/"]
+COPY ["src/FinancialAdvisor.Domain/FinancialAdvisor.Domain.csproj", "src/FinancialAdvisor.Domain/"]
+COPY ["src/FinancialAdvisor.Infrastructure/FinancialAdvisor.Infrastructure.csproj", "src/FinancialAdvisor.Infrastructure/"]
 RUN dotnet restore "src/FinancialAdvisor.Api/FinancialAdvisor.Api.csproj"
 COPY . .
 WORKDIR "/src/src/FinancialAdvisor.Api"

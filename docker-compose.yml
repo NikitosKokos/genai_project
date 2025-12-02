@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+   # MongoDB Community Edition
+   mongodb:
+      image: mongo:7.0
+      container_name: fin-advisor-mongodb
+      ports:
+         - '27017:27017'
+      environment:
+         MONGO_INITDB_ROOT_USERNAME: mongodb_admin
+         MONGO_INITDB_ROOT_PASSWORD: demo_password
+         MONGO_INITDB_DATABASE: financial_advisor
+      volumes:
+         - mongodb_data:/data/db
+         - ./init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js
+      networks:
+         - fin-advisor-network
+      healthcheck:
+         test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+         interval: 10s
+         timeout: 5s
+         retries: 5
+
+   # MongoDB Express (Optional - Web UI for development)
+   mongo-express:
+      image: mongo-express:latest
+      container_name: fin-advisor-mongo-express
+      ports:
+         - '8081:8081'
+      environment:
+         ME_CONFIG_MONGODB_URL: mongodb://mongodb_admin:demo_password@mongodb:27017/
+         ME_CONFIG_MONGODB_ADMINUSERNAME: mongodb_admin
+         ME_CONFIG_MONGODB_ADMINPASSWORD: demo_password
+      depends_on:
+         - mongodb
+      networks:
+         - fin-advisor-network
+
+   # Backend
+   backend:
+      build:
+         context: ./FinancialAdvisor.Backend
+         dockerfile: docker/Dockerfile
+      container_name: fin-advisor-backend
+      ports:
+         - '5000:5000'
+      environment:
+         - ASPNETCORE_ENVIRONMENT=Development
+         - ASPNETCORE_HTTP_PORTS=5000
+         - ConnectionStrings__MongoDB=mongodb://mongodb_admin:demo_password@mongodb:27017/financial_advisor?authSource=admin
+         - EMBEDDING_SERVICE_URL=http://embedding-service:5001
+         - OLLAMA_ENDPOINT=http://ollama:11434
+      depends_on:
+         mongodb:
+            condition: service_healthy
+         embedding-service:
+            condition: service_started
+      networks:
+         - fin-advisor-network
+
+   # Embedding Service
+   embedding-service:
+      build:
+         context: ./EmbeddingService
+         dockerfile: Dockerfile
+      container_name: fin-advisor-embeddings
+      ports:
+         - '5001:5001'
+      networks:
+         - fin-advisor-network
+
+   # Ollama (Local LLM)
+   ollama:
+      image: ollama/ollama:latest
+      container_name: fin-advisor-ollama
+      ports:
+         - '11434:11434'
+      volumes:
+         - ollama_models:/root/.ollama
+      networks:
+         - fin-advisor-network
+
+volumes:
+   mongodb_data:
+   ollama_models:
+
+networks:
+   fin-advisor-network:
+      driver: bridge
