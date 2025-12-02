@@ -15,10 +15,13 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<MongoDbContext>();
 
 // Register repositories and services
-builder.Services.AddScoped<IRagService, MongoDBRAGService>();
+builder.Services.AddScoped<IContextService, ContextService>();
+builder.Services.AddScoped<IMarketDataService, MarketDataService>();
+builder.Services.AddScoped<IPromptService, PromptService>();
+builder.Services.AddScoped<IActionService, ActionService>();
+builder.Services.AddScoped<IRagService, RagOrchestrator>();
 builder.Services.AddScoped<IEmbeddingService, EmbeddingService>();
 builder.Services.AddScoped<ILLMService, LLMService>();
-builder.Services.AddScoped<IMarketDataService, MarketDataService>();
 
 // Add HTTP client for external APIs
 builder.Services.AddHttpClient();

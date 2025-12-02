@@ -4,6 +4,7 @@ using FinancialAdvisor.Application.Models;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System;
+using System.Text;
 using Microsoft.Extensions.Logging;
 
 namespace FinancialAdvisor.Api.Controllers
@@ -40,6 +41,40 @@ namespace FinancialAdvisor.Api.Controllers
                 return StatusCode(500, "Internal server error");
             }
         }
+
+        [HttpPost("stream")]
+        public async Task StreamQuery([FromBody] ChatQueryRequest request)
+        {
+             if (string.IsNullOrWhiteSpace(request.Message))
+            {
+                Response.StatusCode = 400;
+                await Response.WriteAsync("Message cannot be empty");
+                return;
+            }
+
+            var sessionId = request.SessionId ?? "default_session";
+
+            Response.Headers.Append("Content-Type", "text/plain; charset=utf-8");
+            Response.Headers.Append("Cache-Control", "no-cache");
+            Response.Headers.Append("Connection", "keep-alive");
+
+            try
+            {
+                await foreach (var chunk in _ragService.ProcessQueryStreamAsync(request.Message, sessionId))
+                {
+                    var bytes = Encoding.UTF8.GetBytes(chunk);
+                    await Response.Body.WriteAsync(bytes.AsMemory());
+                    await Response.Body.FlushAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Stream query failed");
+                // In a stream, we can't change the status code once headers are sent, 
+                // but we can try to send an error message if nothing was sent yet,
+                // or just log it.
+            }
+        }
     }
 
     public class ChatQueryRequest
@@ -48,4 +83,3 @@ namespace FinancialAdvisor.Api.Controllers
         public string SessionId { get; set; }
     }
 }
-
