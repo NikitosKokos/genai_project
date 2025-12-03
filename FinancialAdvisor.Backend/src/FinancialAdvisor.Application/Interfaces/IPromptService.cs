@@ -13,5 +13,6 @@ namespace FinancialAdvisor.Application.Interfaces
             string ragContext,
             Session session
         );
+        string PostProcessModelOutput(string modelOutput);
     }
 }

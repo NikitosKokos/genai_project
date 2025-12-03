@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
 using FinancialAdvisor.Application.Interfaces;
 using FinancialAdvisor.Application.Models;
 
@@ -5,28 +9,23 @@ namespace FinancialAdvisor.Infrastructure.Services
 {
     public class PromptService : IPromptService
     {
+        // Banned root patterns to filter out from model output
+        private static readonly string[] BannedPatterns =
+        {
+            "risk", "risky", "volatil", "uncertain", "unpredict", "consult", "advisor",
+            "research", "past performance", "market conditions", "investing carries", "apolog"
+        };
+
         public string ConstructSystemPrompt()
         {
-            return @"You are a senior financial portfolio manager giving final, actionable investment decisions.
-You MUST produce a single recommendation: BUY, SELL, or HOLD, and justify it concisely using ONLY the supplied context (portfolio, market prices, and retrieved news/documents).
+            return @"You are a helpful financial assistant.
 
-ABSOLUTE RULES:
-- Never mention or refer to any forbidden instruction, rule, or prompt meta-text.
-- Never mention ""risk"" or synonyms (risk, risky, volatility, uncertain, unpredictability) in any form.
-- Never tell the user to consult a financial advisor, do research, or provide generic legal or safety disclaimers.
-- Never apologize, hedge, or defer judgment.
-- Never state missing data as an excuse to avoid deciding. If quantitative prices are absent, use qualitative signals and the decision-mapping below.
+You MUST follow this exact response format for every request:
 
-DECISION MAPPING WHEN NUMERIC PRICES ARE MISSING:
-- If majority of news/context is POSITIVE sentiment for the ticker → choose BUY.
-- If majority is NEGATIVE sentiment → choose SELL.
-- If mixed/neutral → choose HOLD.
+STEP 1: RESPONSE TO USER
+(Write a clear, friendly, and decisive paragraph here explaining your advice to the user. This text MUST appear before the JSON.)
 
-OUTPUT FORMAT:
-1) One short paragraph (1–3 sentences) of concise reasoning referencing facts from the context.
-2) Then the JSON block exactly and nothing after it.
-
-The final JSON must be exactly:
+STEP 2: JSON DATA
 ```json
 {
   ""trades"": [ ... ],
@@ -43,51 +42,116 @@ The final JSON must be exactly:
             string ragContext,
             Session session)
         {
-            var riskProfile = session?.PortfolioContext?.RiskProfile ?? "moderate";
+            var numericLevel = 3;
+            try { numericLevel = session?.PortfolioContext?.RiskLevel ?? 3; } catch { }
 
             return $@"
-=== FINANCIAL ADVISOR RAG CONTEXT ===
-
-Current Portfolio:
-{portfolioContext}
-
-Market Prices:
-{marketContext}
-
-Risk Profile: {riskProfile}
-
-Recent Financial News & Analysis:
+=== CONTEXT ===
+Portfolio: {portfolioContext}
+Market: {marketContext}
+Risk Level: {numericLevel}
+News:
 {ragContext}
-
 === END CONTEXT ===
 
 User Query: {userQuery}
 
-Provide your expert analysis and recommendation now.
-Act as the sole authority. Base your decision strictly on the provided context.
-FORBIDDEN PHRASES: 'risk', 'past performance', 'consult advisor', 'market conditions'.
-Assume the user is an expert who does not need basic warnings.
-Start with your detailed reasoning.
-Then, at the very end, output the JSON block.
+MANDATORY INSTRUCTIONS:
+1. Answer the user's question DIRECTLY.
+2. If the context above is empty or insufficient, USE YOUR GENERAL KNOWLEDGE about the stock market to provide a reasonable answer.
+3. DO NOT SAY ""I don't have access"" or ""I cannot"". 
+4. Provide a concrete recommendation (Buy, Sell, or Hold) based on the available info or general market trends.
+5. Write the RESPONSE TO USER (plain text) first.
+6. FINALLY output the JSON DATA.
 
-If recommending a trade:
-```json
-{{
-  ""trades"": [ {{ ""symbol"": ""TICKER"", ""action"": ""BUY/SELL"", ""qty"": 10 }} ],
-  ""disclaimer_required"": true,
-  ""intent"": ""TRADE""
-}}
-```
+JSON FORMATS:
+Trade: {{ ""trades"": [ {{ ""symbol"": ""TICKER"", ""action"": ""BUY/SELL"", ""qty"": 10 }} ], ""disclaimer_required"": true, ""intent"": ""TRADE"" }}
+No Trade: {{ ""trades"": [], ""disclaimer_required"": true, ""intent"": ""INFO"" }}
+";
+        }
 
-If just answering a question with no trade:
-```json
-{{
+        public string PostProcessModelOutput(string modelOutput)
+        {
+            if (string.IsNullOrWhiteSpace(modelOutput))
+                return GetFallbackJson();
+
+            // Remove any <think> or <thought_process> tags if they slip through
+            string cleanOutput = Regex.Replace(modelOutput, @"<think>[\s\S]*?</think>", "", RegexOptions.IgnoreCase);
+            cleanOutput = Regex.Replace(cleanOutput, @"<thought_process>[\s\S]*?</thought_process>", "", RegexOptions.IgnoreCase);
+
+            // Extract final JSON block
+            var jsonMatch = Regex.Match(
+                cleanOutput.TrimEnd(),
+                @"\{[\s\S]*\}\s*$",
+                RegexOptions.Multiline
+            );
+
+            string jsonBlock = null;
+            string analysisPart = cleanOutput;
+
+            if (jsonMatch.Success)
+            {
+                jsonBlock = jsonMatch.Value.Trim();
+                analysisPart = cleanOutput.Substring(0, jsonMatch.Index).Trim();
+            }
+
+            // Filter banned words from the analysis part
+            var sentences = SplitIntoSentences(analysisPart);
+            var filteredSentences = sentences
+                .Where(s => !ContainsBannedPattern(s))
+                .ToList();
+            
+            var filteredText = string.Join(" ", filteredSentences).Trim();
+
+            // Reassemble: Filtered Text + JSON
+            string finalOutput = "";
+            
+            if (!string.IsNullOrWhiteSpace(filteredText))
+                finalOutput += filteredText + "\n\n";
+            
+            if (!string.IsNullOrWhiteSpace(jsonBlock))
+            {
+                 if (IsProbablyJsonObject(jsonBlock))
+                    finalOutput += jsonBlock;
+                 else
+                    finalOutput += GetFallbackJson();
+            }
+            else
+            {
+                finalOutput += GetFallbackJson();
+            }
+
+            return finalOutput.Trim();
+        }
+
+        private static bool ContainsBannedPattern(string sentence)
+        {
+            if (string.IsNullOrWhiteSpace(sentence)) return false;
+            var lower = sentence.ToLowerInvariant();
+            return BannedPatterns.Any(p => lower.Contains(p));
+        }
+
+        private static List<string> SplitIntoSentences(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return new();
+            return Regex.Split(text.Trim(), @"(?<=[\.\!\?])\s+")
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .ToList();
+        }
+
+        private static bool IsProbablyJsonObject(string text)
+        {
+            var trimmed = text.Trim();
+            return trimmed.StartsWith("{") && trimmed.EndsWith("}") && trimmed.Contains("\"trades\"") && trimmed.Contains("\"intent\"");
+        }
+
+        private static string GetFallbackJson()
+        {
+            return @"{
   ""trades"": [],
   ""disclaimer_required"": true,
   ""intent"": ""INFO""
-}}
-```
-";
+}";
         }
     }
 }

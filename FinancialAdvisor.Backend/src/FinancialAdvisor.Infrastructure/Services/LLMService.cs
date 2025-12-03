@@ -9,7 +9,9 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Runtime.CompilerServices;
 
 namespace FinancialAdvisor.Infrastructure.Services
 {
@@ -24,7 +26,7 @@ namespace FinancialAdvisor.Infrastructure.Services
         {
             _httpClient = httpClient;
             _ollamaEndpoint = configuration["OLLAMA_ENDPOINT"] ?? "http://ollama:11434";
-            _modelName = configuration["OLLAMA_MODEL"] ?? "deepseek-r1:8b";
+            _modelName = configuration["OLLAMA_MODEL"] ?? "deepseek-r1:1.5b";
             _logger = logger;
         }
 
@@ -39,7 +41,14 @@ namespace FinancialAdvisor.Infrastructure.Services
                 {
                     model = _modelName,
                     prompt = prompt,
-                    stream = false
+                    stream = false,
+                    keep_alive = -1,
+                    think = false, // Disable native thinking output
+                    options = new 
+                    {
+                        num_ctx = 4096,
+                        num_gpu = 99
+                    }
                 };
 
                 var response = await _httpClient.PostAsync($"{_ollamaEndpoint}/api/generate", new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json"));
@@ -55,7 +64,7 @@ namespace FinancialAdvisor.Infrastructure.Services
             }
         }
 
-        public async IAsyncEnumerable<string> GenerateFinancialAdviceStreamAsync(string userQuery, string context, string sessionId)
+        public async IAsyncEnumerable<string> GenerateFinancialAdviceStreamAsync(string userQuery, string context, string sessionId, [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             var prompt = $"{context}\n\nUser Query: {userQuery}\n\nResponse:";
             
@@ -63,21 +72,31 @@ namespace FinancialAdvisor.Infrastructure.Services
             {
                 model = _modelName,
                 prompt = prompt,
-                stream = true
+                stream = true,
+                keep_alive = -1,
+                think = false, // Disable native thinking output
+                options = new 
+                {
+                    num_ctx = 4096,
+                    num_gpu = 99
+                }
             };
 
             var requestContent = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
             using var requestMessage = new HttpRequestMessage(HttpMethod.Post, $"{_ollamaEndpoint}/api/generate") { Content = requestContent };
             
-            using var response = await _httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead);
+            using var response = await _httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
 
-            using var stream = await response.Content.ReadAsStreamAsync();
+            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var reader = new StreamReader(stream);
 
             string? line;
+            var accumulatedText = "";
+
             while ((line = await reader.ReadLineAsync()) != null)
             {
+                if (cancellationToken.IsCancellationRequested) break;
                 if (string.IsNullOrEmpty(line)) continue;
 
                 OllamaResponse? chunk = null;
@@ -90,9 +109,39 @@ namespace FinancialAdvisor.Infrastructure.Services
                      _logger.LogWarning(ex, "Failed to parse streaming chunk");
                 }
 
-                if (chunk != null && !string.IsNullOrEmpty(chunk.Response))
+                if (chunk != null)
                 {
-                    yield return chunk.Response;
+                    // IGNORE chunk.Thinking entirely for immediate response
+
+                    // Handle Response field
+                    if (!string.IsNullOrEmpty(chunk.Response))
+                    {
+                        var text = chunk.Response;
+
+                        // Manual filter for raw thought tags if they leak in the text
+                        if (text.Contains("<thought_process>") || text.Contains("</thought_process>") || text.Contains("<think>") || text.Contains("</think>"))
+                        {
+                            text = text.Replace("<thought_process>", "")
+                                       .Replace("</thought_process>", "")
+                                       .Replace("<think>", "")
+                                       .Replace("</think>", "");
+                        }
+                        
+                        // Hybrid logic to handle both Delta and Accumulated streaming from Ollama
+                        if (accumulatedText.Length > 0 && text.StartsWith(accumulatedText))
+                        {
+                            // It's an accumulated chunk
+                            var delta = text.Substring(accumulatedText.Length);
+                            accumulatedText = text;
+                            yield return delta;
+                        }
+                        else
+                        {
+                            // It's a standard delta chunk
+                            accumulatedText += text;
+                            yield return text;
+                        }
+                    }
                 }
             }
         }
@@ -101,6 +150,9 @@ namespace FinancialAdvisor.Infrastructure.Services
         {
             [JsonPropertyName("response")]
             public string Response { get; set; }
+
+            [JsonPropertyName("thinking")]
+            public string Thinking { get; set; }
             
             [JsonPropertyName("done")]
             public bool Done { get; set; }

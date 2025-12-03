@@ -62,6 +62,9 @@ namespace FinancialAdvisor.Application.Models
         [BsonElement("risk_profile")]
         public string RiskProfile { get; set; }
 
+        [BsonElement("risk_level")]
+        public int? RiskLevel { get; set; }
+
         [BsonElement("investment_goal")]
         public string InvestmentGoal { get; set; }
 

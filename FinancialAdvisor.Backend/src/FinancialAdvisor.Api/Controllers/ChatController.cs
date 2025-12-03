@@ -45,34 +45,24 @@ namespace FinancialAdvisor.Api.Controllers
         [HttpPost("stream")]
         public async Task StreamQuery([FromBody] ChatQueryRequest request)
         {
-             if (string.IsNullOrWhiteSpace(request.Message))
-            {
-                Response.StatusCode = 400;
-                await Response.WriteAsync("Message cannot be empty");
-                return;
-            }
+            Response.Headers.Add("Content-Type", "text/plain");
+            Response.Headers.Add("Cache-Control", "no-cache");
+            Response.Headers.Add("Connection", "keep-alive");
 
-            var sessionId = request.SessionId ?? "default_session";
+            var responseStream = Response.BodyWriter;
+            var cancellation = HttpContext.RequestAborted;
 
-            Response.Headers.Append("Content-Type", "text/plain; charset=utf-8");
-            Response.Headers.Append("Cache-Control", "no-cache");
-            Response.Headers.Append("Connection", "keep-alive");
+            await foreach (var chunk in _ragService.ProcessQueryStreamAsync(request.Message, request.SessionId, cancellation))
+            {
+                if (cancellation.IsCancellationRequested) break;
 
-            try
-            {
-                await foreach (var chunk in _ragService.ProcessQueryStreamAsync(request.Message, sessionId))
-                {
-                    var bytes = Encoding.UTF8.GetBytes(chunk);
-                    await Response.Body.WriteAsync(bytes.AsMemory());
-                    await Response.Body.FlushAsync();
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Stream query failed");
-                // In a stream, we can't change the status code once headers are sent, 
-                // but we can try to send an error message if nothing was sent yet,
-                // or just log it.
+                if (string.IsNullOrWhiteSpace(chunk))
+                    continue;
+
+                var buffer = Encoding.UTF8.GetBytes(chunk);
+
+                await responseStream.WriteAsync(buffer, cancellation);
+                await responseStream.FlushAsync(cancellation);
             }
         }
     }

@@ -6,7 +6,10 @@ using MongoDB.Driver;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Runtime.CompilerServices;
+using System.Diagnostics;
 
 namespace FinancialAdvisor.Infrastructure.Services.RAG
 {
@@ -62,14 +65,15 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
 
             // 3. Retrieve Documents
             var queryEmbedding = await _embeddingService.EmbedAsync(userQuery);
-            var relevantDocs = await VectorSearchAsync(queryEmbedding, 5);
+            var relevantDocs = await VectorSearchAsync(queryEmbedding, 3);
             var ragContext = string.Join("\n\n", relevantDocs.Select(d => $"[{d.Source}] {d.Title}\n{d.Content}"));
 
             // 4. Construct Prompt
             var fullPrompt = _promptService.ConstructAugmentedUserPrompt(userQuery, portfolioContext, marketContext, ragContext, session);
 
             // 5. Generate Response
-            var advice = await _llmService.GenerateFinancialAdviceAsync(userQuery, fullPrompt, sessionId);
+            var adviceRaw = await _llmService.GenerateFinancialAdviceAsync(userQuery, fullPrompt, sessionId);
+            var advice = _promptService.PostProcessModelOutput(adviceRaw);
 
             // 6. Execute Actions
             var trades = await _actionService.ParseAndExecuteTradesAsync(advice, sessionId);
@@ -88,33 +92,64 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             };
         }
 
-        public async IAsyncEnumerable<string> ProcessQueryStreamAsync(string userQuery, string sessionId)
+        public async IAsyncEnumerable<string> ProcessQueryStreamAsync(string userQuery, string sessionId, [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-             _logger.LogInformation($"[{sessionId}] Processing RAG STREAM query: {userQuery}");
+             var sw = Stopwatch.StartNew();
+             _logger.LogInformation($"[{sessionId}] Start processing query: {userQuery}");
 
-            // 1. Get Context
-            var session = await _contextService.GetSessionAsync(sessionId);
-            var portfolio = await _contextService.GetPortfolioAsync(sessionId);
+            // 1. Start independent tasks parallelly
+            // RAG (Embed + Search)
+            var ragTask = Task.Run(async () => 
+            {
+                var swRag = Stopwatch.StartNew();
+                var queryEmbedding = await _embeddingService.EmbedAsync(userQuery);
+                var docs = await VectorSearchAsync(queryEmbedding, 3);
+                swRag.Stop();
+                _logger.LogInformation($"[{sessionId}] RAG retrieval took {swRag.ElapsedMilliseconds}ms");
+                return string.Join("\n\n", docs.Select(d => $"[{d.Source}] {d.Title}\n{d.Content}"));
+            }, cancellationToken);
+
+            // Session & Portfolio
+            var sessionTask = _contextService.GetSessionAsync(sessionId);
+            var portfolioTask = _contextService.GetPortfolioAsync(sessionId);
+
+            await Task.WhenAll(sessionTask, portfolioTask);
+            _logger.LogInformation($"[{sessionId}] Context loaded in {sw.ElapsedMilliseconds}ms");
+
+            var session = await sessionTask;
+            var portfolio = await portfolioTask;
             var portfolioContext = _contextService.FormatPortfolioContext(portfolio);
 
-            // 2. Get Market Data
+            // Market Data (depends on portfolio)
             var symbols = portfolio?.Holdings?.Select(h => h.Symbol).ToList() ?? new List<string>();
-            var marketData = await _marketDataService.GetMarketDataAsync(symbols);
+            var marketDataTask = _marketDataService.GetMarketDataAsync(symbols);
+
+            // Wait for RAG and Market Data
+            await Task.WhenAll(ragTask, marketDataTask);
+            
+            var ragContext = await ragTask;
+            var marketData = await marketDataTask;
             var marketContext = _marketDataService.FormatMarketContext(marketData);
 
-            // 3. Retrieve Documents
-            var queryEmbedding = await _embeddingService.EmbedAsync(userQuery);
-            var relevantDocs = await VectorSearchAsync(queryEmbedding, 5);
-            var ragContext = string.Join("\n\n", relevantDocs.Select(d => $"[{d.Source}] {d.Title}\n{d.Content}"));
+            _logger.LogInformation($"[{sessionId}] Data gathering complete in {sw.ElapsedMilliseconds}ms. Constructing prompt...");
 
             // 4. Construct Prompt
             var fullPrompt = _promptService.ConstructAugmentedUserPrompt(userQuery, portfolioContext, marketContext, ragContext, session);
 
+            _logger.LogInformation($"[{sessionId}] Starting LLM stream...");
+            var llmSw = Stopwatch.StartNew();
+
             // 5. Stream Response
-            await foreach (var chunk in _llmService.GenerateFinancialAdviceStreamAsync(userQuery, fullPrompt, sessionId))
+            await foreach (var chunk in _llmService.GenerateFinancialAdviceStreamAsync(userQuery, fullPrompt, sessionId, cancellationToken))
             {
+                if (llmSw.IsRunning) 
+                {
+                    llmSw.Stop();
+                    _logger.LogInformation($"[{sessionId}] Time to First Token (TTFT): {llmSw.ElapsedMilliseconds}ms");
+                }
                 yield return chunk;
             }
+            _logger.LogInformation($"[{sessionId}] Total processing time: {sw.ElapsedMilliseconds}ms");
         }
 
         public async Task<List<FinancialDocument>> VectorSearchAsync(float[] queryEmbedding, int topK = 5)
