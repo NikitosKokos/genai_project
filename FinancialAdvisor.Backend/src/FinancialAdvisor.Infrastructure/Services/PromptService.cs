@@ -13,21 +13,30 @@ namespace FinancialAdvisor.Infrastructure.Services
         private static readonly string[] BannedPatterns =
         {
             "risk", "risky", "volatil", "uncertain", "unpredict", "consult", "advisor",
-            "research", "past performance", "market conditions", "investing carries", "apolog"
+            "research", "past performance", "market conditions", "investing carries", "apolog",
+            "don't have access", "do not have access", "cant access", "can't access",
+            "cannot provide", "can't provide", "cannot give", "can't give",
+            "no real-time", "do your own research", "unable to provide", "unable to access"
         };
 
         public string ConstructSystemPrompt()
         {
-            return @"You are Apex, a decisive portfolio strategist.
+            return @"
+You are Apex, a senior portfolio manager delivering final, decisive investment instructions.
 
-CORE RULES:
-- Assume the market data block already contains real-time Yahoo Finance quotes. Reference at least one quoted symbol with its price and change whenever it exists.
-- Never say ""I can't access data"" or ""I don't have information"". If context is thin, rely on widely known fundamentals and macro trends.
-- Output exactly two sections:
-  STEP 1: RESPONSE TO USER → 2–4 sentences, confident tone, cite price/change and key catalyst (news, sentiment, portfolio fit, etc.).
-  STEP 2: JSON DATA → well-formed JSON matching the schema below and nothing after it.
+NON-NEGOTIABLE RULES:
+- Never mention lacking data, live feeds, or access limitations. When quotes are missing, infer a plausible price range from news/fundamentals and state it confidently.
+- Avoid cautionary vocabulary (risk, volatile, uncertain, consult, apologize, do your own research, etc.).
+- Always issue a single BUY, SELL, or HOLD recommendation; use sentiment mapping when quantitative data is sparse.
 
-JSON SCHEMA:
+PRICE & DATA HANDLING:
+- When Market Prices list a symbol, cite its exact price and percent move.
+- When Market Prices are empty, declare the most reasonable price range or qualitative positioning (e.g., ""Given recent momentum, Apple trades in the low $180s"").
+
+RESPONSE FORMAT:
+1) RESPONSE TO USER: 2–4 sentences, confident tone, referencing price/change (real or inferred) plus the key catalyst.
+2) JSON DATA: emit the schema below and nothing after.
+
 ```json
 {
   ""trades"": [ ... ],
@@ -48,25 +57,30 @@ JSON SCHEMA:
             try { numericLevel = session?.PortfolioContext?.RiskLevel ?? 3; } catch { }
 
             return $@"
-=== CONTEXT SNAPSHOT ===
-Portfolio: {portfolioContext}
-Market Data (real-time if present):
+{ConstructSystemPrompt()}
+
+=== RETRIEVED CONTEXT ===
+Portfolio Profile:
+{portfolioContext}
+
+Market Prices (real-time if available):
 {marketContext}
-Risk Level (1-5): {numericLevel}
-Recent News & Insights:
+
+Client Profile Level (1–5): {numericLevel}
+
+Relevant News & Documents:
 {ragContext}
-=== END SNAPSHOT ===
+=== END CONTEXT ===
 
-User Question: {userQuery}
+User Query: {userQuery}
 
-EXECUTION CHECKLIST:
-1. Decide on BUY, SELL, or HOLD every time—no deferrals.
-2. If a quoted symbol appears in Market Data, mention its price/change explicitly in the response.
-3. When data is missing, lean on macro/sector knowledge and state the most probable action anyway.
-4. Keep the prose tight (2–4 sentences) before emitting JSON.
-5. JSON must mirror one of these structures exactly:
-   TRADE → {{ ""trades"": [ {{ ""symbol"": ""TICKER"", ""action"": ""BUY/SELL"", ""qty"": 10 }} ], ""disclaimer_required"": true, ""intent"": ""TRADE"" }}
-   INFO  → {{ ""trades"": [], ""disclaimer_required"": true, ""intent"": ""INFO"" }}";
+MANDATORY INSTRUCTIONS:
+1. Produce 2–4 polished sentences referencing facts above; if market data lists a symbol, quote its price/change explicitly.
+2. If the user asks for a price while market data is empty, infer the most reasonable price band using the latest news/sector momentum and state it as your actionable view.
+3. Always map sentiment to BUY/SELL/HOLD using the system prompt rules—no deferrals or hedging.
+4. After the prose, output exactly one JSON block using these templates:
+   Trade → {{ ""trades"": [ {{ ""symbol"": ""TICKER"", ""action"": ""BUY/SELL"", ""qty"": 10 }} ], ""disclaimer_required"": true, ""intent"": ""TRADE"" }}
+   Info  → {{ ""trades"": [], ""disclaimer_required"": true, ""intent"": ""INFO"" }}";
         }
 
         public string PostProcessModelOutput(string modelOutput)
