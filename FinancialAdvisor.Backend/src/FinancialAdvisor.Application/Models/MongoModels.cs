@@ -200,6 +200,55 @@ namespace FinancialAdvisor.Application.Models
         public DateTime CreatedAt { get; set; }
     }
 
+    // NEW: Asset Catalog for "Available Assets" Panel
+    [BsonCollection("assets")]
+    public class AssetDefinition
+    {
+        [BsonId]
+        public ObjectId Id { get; set; }
+
+        [BsonElement("symbol")]
+        public string Symbol { get; set; }
+
+        [BsonElement("name")]
+        public string Name { get; set; }
+
+        [BsonElement("sector")]
+        public string Sector { get; set; }
+
+        [BsonElement("type")]
+        public string Type { get; set; } // Stock, ETF, Crypto
+
+        [BsonElement("logo_url")]
+        public string LogoUrl { get; set; }
+        
+        [BsonElement("is_active")]
+        public bool IsActive { get; set; } = true;
+    }
+
+    // NEW: Chat History for UI Persistence
+    [BsonCollection("chat_history")]
+    public class ChatMessage
+    {
+        [BsonId]
+        public ObjectId Id { get; set; }
+
+        [BsonElement("session_id")]
+        public string SessionId { get; set; }
+
+        [BsonElement("role")]
+        public string Role { get; set; } // "user" or "assistant"
+
+        [BsonElement("content")]
+        public string Content { get; set; }
+
+        [BsonElement("created_at")]
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        
+        [BsonElement("metadata")]
+        public BsonDocument Metadata { get; set; }
+    }
+
     // Attribute to mark collections
     [AttributeUsage(AttributeTargets.Class)]
     public class BsonCollectionAttribute : Attribute

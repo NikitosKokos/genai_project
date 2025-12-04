@@ -34,6 +34,12 @@ namespace FinancialAdvisor.Infrastructure.Data
 
         public IMongoCollection<RagQuery> RagQueries =>
             _database.GetCollection<RagQuery>("rag_queries");
+
+        public IMongoCollection<AssetDefinition> Assets =>
+            _database.GetCollection<AssetDefinition>("assets");
+
+        public IMongoCollection<ChatMessage> ChatHistory =>
+            _database.GetCollection<ChatMessage>("chat_history");
     }
 }
 

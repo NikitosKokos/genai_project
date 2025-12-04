@@ -25,6 +25,7 @@ builder.Services.AddScoped<ILLMService, LLMService>();
 
 // Background Services
 builder.Services.AddHostedService<NewsIngestionService>();
+builder.Services.AddHostedService<DataSeederService>();
 
 // Add HTTP client for external APIs
 builder.Services.AddHttpClient();
