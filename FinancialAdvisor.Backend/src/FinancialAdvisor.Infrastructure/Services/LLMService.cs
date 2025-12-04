@@ -64,7 +64,7 @@ namespace FinancialAdvisor.Infrastructure.Services
             }
         }
 
-        public async IAsyncEnumerable<string> GenerateFinancialAdviceStreamAsync(string userQuery, string context, string sessionId, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        public async IAsyncEnumerable<string> GenerateFinancialAdviceStreamAsync(string userQuery, string context, string sessionId, [EnumeratorCancellation] CancellationToken cancellationToken = default, bool enableReasoning = false)
         {
             var prompt = $"{context}\n\nUser Query: {userQuery}\n\nResponse:";
             
@@ -74,7 +74,7 @@ namespace FinancialAdvisor.Infrastructure.Services
                 prompt = prompt,
                 stream = true,
                 keep_alive = -1,
-                think = false, // Disable native thinking output
+                think = enableReasoning, // Controlled by flag
                 options = new 
                 {
                     num_ctx = 4096,
@@ -111,7 +111,17 @@ namespace FinancialAdvisor.Infrastructure.Services
 
                 if (chunk != null)
                 {
-                    // IGNORE chunk.Thinking entirely for immediate response
+                    // Handle Thinking field if enabled
+                    if (enableReasoning && !string.IsNullOrEmpty(chunk.Thinking))
+                    {
+                         // Wrap thinking in tags if you want to display it clearly on frontend, or just stream it raw
+                         // For now, let's yield it as a special block or just raw text. 
+                         // Given the user wants to see it, we can yield it. 
+                         // To distinguish it from normal response, we might want to wrap it or just let it flow.
+                         // DeepSeek models usually separate them cleanly.
+                         // Let's wrap it in <think> tags for the frontend to parse if desired, or just stream it.
+                         yield return $"<think>{chunk.Thinking}</think>";
+                    }
 
                     // Handle Response field
                     if (!string.IsNullOrEmpty(chunk.Response))

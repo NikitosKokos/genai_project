@@ -96,10 +96,10 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             };
         }
 
-        public async IAsyncEnumerable<string> ProcessQueryStreamAsync(string userQuery, string sessionId, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        public async IAsyncEnumerable<string> ProcessQueryStreamAsync(string userQuery, string sessionId, [EnumeratorCancellation] CancellationToken cancellationToken = default, bool enableReasoning = false, int documentCount = 3)
         {
              var sw = Stopwatch.StartNew();
-             _logger.LogInformation($"[{sessionId}] Start processing query: {userQuery}");
+             _logger.LogInformation($"[{sessionId}] Start processing query: {userQuery} (Reasoning: {enableReasoning}, Docs: {documentCount})");
 
             // 1. Start independent tasks parallelly
             // RAG (Embed + Search + News)
@@ -109,7 +109,7 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
                 var queryEmbedding = await _embeddingService.EmbedAsync(userQuery);
                 
                 // Parallelize Vector Search and News Fetch
-                var vectorSearchTask = VectorSearchAsync(queryEmbedding, 3);
+                var vectorSearchTask = VectorSearchAsync(queryEmbedding, documentCount);
                 var newsTask = GetRecentNewsAsync(5); // Fetch top 5 news
                 
                 await Task.WhenAll(vectorSearchTask, newsTask);
@@ -168,9 +168,9 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
 
             // 5. Stream Response
             bool jsonStarted = false;
-            await foreach (var chunk in _llmService.GenerateFinancialAdviceStreamAsync(userQuery, fullPrompt, sessionId, cancellationToken))
+            await foreach (var chunk in _llmService.GenerateFinancialAdviceStreamAsync(userQuery, fullPrompt, sessionId, cancellationToken, enableReasoning))
             {
-                if (llmSw.IsRunning) 
+                if (llmSw.IsRunning)  
                 {
                     llmSw.Stop();
                     _logger.LogInformation($"[{sessionId}] Time to First Token (TTFT): {llmSw.ElapsedMilliseconds}ms");

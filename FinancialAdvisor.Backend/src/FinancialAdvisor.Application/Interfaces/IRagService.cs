@@ -8,7 +8,7 @@ namespace FinancialAdvisor.Application.Interfaces
     public interface IRagService
     {
         Task<ChatResponse> ProcessQueryAsync(string userQuery, string sessionId);
-        IAsyncEnumerable<string> ProcessQueryStreamAsync(string userQuery, string sessionId, CancellationToken cancellationToken = default);
+        IAsyncEnumerable<string> ProcessQueryStreamAsync(string userQuery, string sessionId, CancellationToken cancellationToken = default, bool enableReasoning = false, int documentCount = 3);
         Task<List<FinancialDocument>> VectorSearchAsync(float[] queryEmbedding, int topK = 5);
         Task<Session> GetSessionContextAsync(string sessionId);
         Task UpdatePortfolioFromTradeAsync(string sessionId, Trade trade);

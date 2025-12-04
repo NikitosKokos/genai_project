@@ -7,7 +7,7 @@ namespace FinancialAdvisor.Application.Interfaces
     public interface ILLMService
     {
         Task<string> GenerateFinancialAdviceAsync(string userQuery, string context, string sessionId);
-        IAsyncEnumerable<string> GenerateFinancialAdviceStreamAsync(string userQuery, string context, string sessionId, CancellationToken cancellationToken = default);
+        IAsyncEnumerable<string> GenerateFinancialAdviceStreamAsync(string userQuery, string context, string sessionId, CancellationToken cancellationToken = default, bool enableReasoning = false);
     }
 }
 

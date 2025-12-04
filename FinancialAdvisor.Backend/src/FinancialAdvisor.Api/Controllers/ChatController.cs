@@ -51,8 +51,11 @@ namespace FinancialAdvisor.Api.Controllers
 
             var responseStream = Response.BodyWriter;
             var cancellation = HttpContext.RequestAborted;
+            
+            // Default to 3 if not specified or invalid
+            int docCount = request.DocumentCount > 0 ? request.DocumentCount : 3;
 
-            await foreach (var chunk in _ragService.ProcessQueryStreamAsync(request.Message, request.SessionId, cancellation))
+            await foreach (var chunk in _ragService.ProcessQueryStreamAsync(request.Message, request.SessionId, cancellation, request.EnableReasoning, docCount))
             {
                 if (cancellation.IsCancellationRequested) break;
 
@@ -71,5 +74,7 @@ namespace FinancialAdvisor.Api.Controllers
     {
         public string Message { get; set; }
         public string SessionId { get; set; }
+        public bool EnableReasoning { get; set; } = false;
+        public int DocumentCount { get; set; } = 3;
     }
 }
