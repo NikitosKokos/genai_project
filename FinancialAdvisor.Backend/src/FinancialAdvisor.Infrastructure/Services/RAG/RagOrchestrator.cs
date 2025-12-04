@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Runtime.CompilerServices;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 
 namespace FinancialAdvisor.Infrastructure.Services.RAG
 {
@@ -58,9 +59,12 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             
             var portfolioContext = _contextService.FormatPortfolioContext(portfolio);
 
-            // 2. Get Market Data
-            var symbols = portfolio?.Holdings?.Select(h => h.Symbol).ToList() ?? new List<string>();
-            var marketData = await _marketDataService.GetMarketDataAsync(symbols);
+            // 2. Get Market Data (Portfolio + Query Symbols)
+            var portfolioSymbols = portfolio?.Holdings?.Select(h => h.Symbol).ToList() ?? new List<string>();
+            var querySymbols = ExtractSymbolsFromQuery(userQuery);
+            var allSymbols = portfolioSymbols.Concat(querySymbols).Distinct().ToList();
+
+            var marketData = await _marketDataService.GetMarketDataAsync(allSymbols);
             var marketContext = _marketDataService.FormatMarketContext(marketData);
 
             // 3. Retrieve Documents
@@ -98,15 +102,35 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
              _logger.LogInformation($"[{sessionId}] Start processing query: {userQuery}");
 
             // 1. Start independent tasks parallelly
-            // RAG (Embed + Search)
+            // RAG (Embed + Search + News)
             var ragTask = Task.Run(async () => 
             {
                 var swRag = Stopwatch.StartNew();
                 var queryEmbedding = await _embeddingService.EmbedAsync(userQuery);
-                var docs = await VectorSearchAsync(queryEmbedding, 3);
+                
+                // Parallelize Vector Search and News Fetch
+                var vectorSearchTask = VectorSearchAsync(queryEmbedding, 3);
+                var newsTask = GetRecentNewsAsync(5); // Fetch top 5 news
+                
+                await Task.WhenAll(vectorSearchTask, newsTask);
+                
+                var docs = await vectorSearchTask;
+                var news = await newsTask;
+
                 swRag.Stop();
                 _logger.LogInformation($"[{sessionId}] RAG retrieval took {swRag.ElapsedMilliseconds}ms");
-                return string.Join("\n\n", docs.Select(d => $"[{d.Source}] {d.Title}\n{d.Content}"));
+                
+                // Format Documents
+                var docContent = string.Join("\n\n", docs.Select(d => $"[{d.Source}] {d.Title}\n{d.Content}"));
+                
+                // Format News (Clean up titles)
+                var newsContent = string.Join("\n", news.Select(d => 
+                    $"- {CleanTitle(d.Title)}"));
+                
+                if (string.IsNullOrEmpty(newsContent)) return docContent;
+                if (string.IsNullOrEmpty(docContent)) return newsContent;
+                
+                return "=== LATEST HEADLINES ===\n" + newsContent + "\n\n=== RELEVANT DOCUMENTS ===\n" + docContent;
             }, cancellationToken);
 
             // Session & Portfolio
@@ -120,9 +144,12 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             var portfolio = await portfolioTask;
             var portfolioContext = _contextService.FormatPortfolioContext(portfolio);
 
-            // Market Data (depends on portfolio)
-            var symbols = portfolio?.Holdings?.Select(h => h.Symbol).ToList() ?? new List<string>();
-            var marketDataTask = _marketDataService.GetMarketDataAsync(symbols);
+            // Market Data (Portfolio + Query Symbols)
+            var portfolioSymbols = portfolio?.Holdings?.Select(h => h.Symbol).ToList() ?? new List<string>();
+            var querySymbols = ExtractSymbolsFromQuery(userQuery);
+            var allSymbols = portfolioSymbols.Concat(querySymbols).Distinct().ToList();
+
+            var marketDataTask = _marketDataService.GetMarketDataAsync(allSymbols);
 
             // Wait for RAG and Market Data
             await Task.WhenAll(ragTask, marketDataTask);
@@ -140,6 +167,7 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             var llmSw = Stopwatch.StartNew();
 
             // 5. Stream Response
+            bool jsonStarted = false;
             await foreach (var chunk in _llmService.GenerateFinancialAdviceStreamAsync(userQuery, fullPrompt, sessionId, cancellationToken))
             {
                 if (llmSw.IsRunning) 
@@ -147,9 +175,65 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
                     llmSw.Stop();
                     _logger.LogInformation($"[{sessionId}] Time to First Token (TTFT): {llmSw.ElapsedMilliseconds}ms");
                 }
+                
+                if (chunk.Contains("{")) jsonStarted = true;
                 yield return chunk;
             }
+            
+            // FORCE JSON FALLBACK if model failed to output it
+            if (!jsonStarted)
+            {
+                yield return "\n\n" + @"{ ""trades"": [], ""disclaimer_required"": true, ""intent"": ""INFO"" }";
+            }
+
             _logger.LogInformation($"[{sessionId}] Total processing time: {sw.ElapsedMilliseconds}ms");
+        }
+
+        private List<string> ExtractSymbolsFromQuery(string query)
+        {
+            var candidates = new HashSet<string>();
+            
+            // 1. Known Entities
+            var knownEntities = new[] { 
+                "Apple", "Microsoft", "Google", "Amazon", "Tesla", "Nvidia", "Meta", "Facebook", "Netflix", "Bitcoin", "Ethereum", 
+                "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "NFLX", "BTC", "ETH" 
+            };
+            
+            foreach (var entity in knownEntities)
+            {
+                if (query.IndexOf(entity, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    candidates.Add(entity);
+                }
+            }
+
+            // 2. Common Typos (Manual fix for user requests)
+            var commonTypos = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) 
+            {
+                { "Mircosoft", "Microsoft" },
+                { "Aple", "Apple" },
+                { "Aplle", "Apple" },
+                { "Gogle", "Google" },
+                { "Nividia", "Nvidia" }
+            };
+
+            foreach (var typo in commonTypos)
+            {
+                 if (query.IndexOf(typo.Key, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    candidates.Add(typo.Value);
+                }
+            }
+
+            // 3. Potential Tickers (2-5 uppercase letters surrounded by non-letters or start/end)
+            // This is a heuristic to catch things like "AMD", "INTC" if typed in uppercase.
+            var regex = new Regex(@"\b[A-Z]{2,5}\b");
+            foreach (Match match in regex.Matches(query))
+            {
+                candidates.Add(match.Value);
+            }
+
+            return candidates.ToList();
         }
 
         public async Task<List<FinancialDocument>> VectorSearchAsync(float[] queryEmbedding, int topK = 5)
@@ -180,6 +264,23 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             }
         }
 
+        private async Task<List<FinancialDocument>> GetRecentNewsAsync(int count)
+        {
+            try
+            {
+                return await _mongoContext.FinancialDocuments
+                    .Find(d => d.Category == "News")
+                    .SortByDescending(d => d.CreatedAt)
+                    .Limit(count)
+                    .ToListAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to fetch recent news");
+                return new List<FinancialDocument>();
+            }
+        }
+
         private double CosineSimilarity(float[] query, double[] docEmbedding)
         {
              if (query == null || docEmbedding == null) return 0;
@@ -200,6 +301,27 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
         public async Task UpdatePortfolioFromTradeAsync(string sessionId, Trade trade)
         {
              await Task.CompletedTask; 
+        }
+
+        private string CleanTitle(string title)
+        {
+            if (string.IsNullOrWhiteSpace(title)) return "";
+            // Remove common suffixes
+            var clean = title
+                .Replace(" - Yahoo Finance", "")
+                .Replace(" - Yahoo! Finance", "")
+                .Replace(" - Google News", "")
+                .Replace(" - CNBC", "")
+                .Replace(" - Bloomberg", "");
+            
+            // Remove anything that looks like a base64 hash [CBM...]
+            if (clean.StartsWith("[CBM"))
+            {
+                var idx = clean.IndexOf("] - ");
+                if (idx > 0) clean = clean.Substring(idx + 4);
+            }
+            
+            return clean.Trim();
         }
     }
 }

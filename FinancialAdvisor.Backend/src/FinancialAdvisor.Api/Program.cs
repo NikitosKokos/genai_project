@@ -23,6 +23,9 @@ builder.Services.AddScoped<IRagService, RagOrchestrator>();
 builder.Services.AddScoped<IEmbeddingService, EmbeddingService>();
 builder.Services.AddScoped<ILLMService, LLMService>();
 
+// Background Services
+builder.Services.AddHostedService<NewsIngestionService>();
+
 // Add HTTP client for external APIs
 builder.Services.AddHttpClient();
 

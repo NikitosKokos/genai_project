@@ -5,16 +5,17 @@ using MongoDB.Driver;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
+using System.Text.Json;
 using System.Threading.Tasks;
-using YahooFinanceApi;
 
 namespace FinancialAdvisor.Infrastructure.Services
 {
     public class MarketDataService : IMarketDataService
     {
         private readonly MongoDbContext _mongoContext;
+        private readonly HttpClient _httpClient;
         
-        // Simple mapping for demo purposes.
         private static readonly Dictionary<string, string> _commonTickers = new(StringComparer.OrdinalIgnoreCase)
         {
             { "apple", "AAPL" },
@@ -29,9 +30,14 @@ namespace FinancialAdvisor.Infrastructure.Services
             { "ethereum", "ETH-USD" }
         };
 
-        public MarketDataService(MongoDbContext mongoContext)
+        public MarketDataService(MongoDbContext mongoContext, HttpClient httpClient)
         {
             _mongoContext = mongoContext;
+            _httpClient = httpClient;
+            if (!_httpClient.DefaultRequestHeaders.Contains("User-Agent"))
+            {
+                _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            }
         }
 
         public async Task<List<MarketDataCache>> GetMarketDataAsync(List<string> symbols)
@@ -40,14 +46,10 @@ namespace FinancialAdvisor.Infrastructure.Services
             
             foreach (var s in symbols)
             {
-                var clean = s.Trim();
-                // Remove punctuation if any
-                clean = clean.Replace("?", "").Replace(",", "").Replace(".", "");
-
+                var clean = s.Trim().Replace("?", "").Replace(",", "").Replace(".", "");
                 if (_commonTickers.TryGetValue(clean, out var ticker))
                     distinctSymbols.Add(ticker);
                 else if (clean.Length <= 5 && clean.All(char.IsLetter))
-                     // Assume it's a ticker if short and letters
                     distinctSymbols.Add(clean.ToUpperInvariant());
             }
 
@@ -57,40 +59,53 @@ namespace FinancialAdvisor.Infrastructure.Services
             var result = new List<MarketDataCache>();
             var symbolsToFetch = distinctSymbols.ToList();
 
-            try
+            foreach (var symbol in symbolsToFetch)
             {
-                // Fetch from Yahoo Finance
-                var quotes = await Yahoo.Symbols(symbolsToFetch.ToArray())
-                    .Fields(Field.Symbol, Field.RegularMarketPrice, Field.RegularMarketChangePercent, Field.RegularMarketVolume)
-                    .QueryAsync();
-                
-                foreach (var quote in quotes)
+                try
                 {
-                    var data = new MarketDataCache
-                    {
-                        Symbol = quote.Key,
-                        Price = (decimal)quote.Value.RegularMarketPrice,
-                        ChangePercent = (decimal)quote.Value.RegularMarketChangePercent,
-                        Volume = (long)quote.Value.RegularMarketVolume,
-                        LastUpdated = DateTime.UtcNow
-                    };
-                    result.Add(data);
+                    // Using query2 as alternative
+                    var url = $"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d";
+                    var response = await _httpClient.GetAsync(url);
                     
-                    // Fire and forget: Update cache
-                    _ = UpdateCacheAsync(data);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var json = await response.Content.ReadAsStringAsync();
+                        using var doc = JsonDocument.Parse(json);
+                        var resultElem = doc.RootElement.GetProperty("chart").GetProperty("result")[0];
+                        var meta = resultElem.GetProperty("meta");
+
+                        decimal price = 0;
+                        decimal prevClose = 0;
+
+                        if (meta.TryGetProperty("regularMarketPrice", out var priceProp))
+                            price = priceProp.GetDecimal();
+                        
+                        if (meta.TryGetProperty("chartPreviousClose", out var closeProp))
+                            prevClose = closeProp.GetDecimal();
+
+                        decimal changePercent = (prevClose > 0) ? ((price - prevClose) / prevClose) * 100 : 0;
+
+                        var data = new MarketDataCache
+                        {
+                            Symbol = symbol,
+                            Price = price,
+                            ChangePercent = changePercent,
+                            LastUpdated = DateTime.UtcNow
+                        };
+                        
+                        result.Add(data);
+                        // Write-only cache update
+                        _ = UpdateCacheAsync(data);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[MarketDataService] API Error {response.StatusCode} for {symbol}");
+                    }
                 }
-            }
-            catch
-            {
-                // Fallback to DB if API fails or no internet
-                try 
+                catch (Exception ex)
                 {
-                    var cached = await _mongoContext.MarketCache
-                        .Find(m => symbolsToFetch.Contains(m.Symbol))
-                        .ToListAsync();
-                    result.AddRange(cached);
+                    Console.WriteLine($"[MarketDataService] Exception for {symbol}: {ex.Message}");
                 }
-                catch { /* ignore db errors */ }
             }
 
             return result;
@@ -103,7 +118,7 @@ namespace FinancialAdvisor.Infrastructure.Services
                 var filter = Builders<MarketDataCache>.Filter.Eq(x => x.Symbol, data.Symbol);
                 await _mongoContext.MarketCache.ReplaceOneAsync(filter, data, new ReplaceOptions { IsUpsert = true });
             }
-            catch { /* ignore cache errors */ }
+            catch { }
         }
 
         public string FormatMarketContext(List<MarketDataCache> marketData)
@@ -115,7 +130,7 @@ namespace FinancialAdvisor.Infrastructure.Services
                 .Select(m => $"- {m.Symbol}: ${m.Price:F2} ({m.ChangePercent:+0.00;-0.00}%)")
                 .ToList();
 
-            return $@"REAL-TIME MARKET PRICES (Yahoo Finance):
+            return $@"REAL-TIME MARKET PRICES:
 {string.Join("\n", prices)}";
         }
     }
