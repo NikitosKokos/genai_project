@@ -1,6 +1,6 @@
 // Simple API client wrapper
-// In the future, this will be configured via environment variables
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+// We use the Next.js proxy at /api to avoid CORS issues
+const API_BASE_URL = '/api';
 
 export interface ApiResponse<T> {
   data?: T;
@@ -23,16 +23,16 @@ async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T>
 
   // Handle empty responses
   const text = await response.text();
-  return text ? JSON.parse(text) : {};
+  return text ? JSON.parse(text) : ({} as T);
 }
 
 export const api = {
   // Financial Advisor / RAG
   chat: {
     sendMessage: async (message: string, context?: any) => {
-      return fetchJson('/advisor/chat', {
+      return fetchJson('/rag/query', {
         method: 'POST',
-        body: JSON.stringify({ message, context }),
+        body: JSON.stringify({ query: message, userId: 1 }), // Hardcoded userId for demo
       });
     },
     streamMessage: async (message: string, sessionId: string, enableReasoning: boolean = false, onChunk: (chunk: string) => void) => {

@@ -10,7 +10,7 @@ using Microsoft.Extensions.Logging;
 namespace FinancialAdvisor.Api.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("api/rag")]
     public class ChatController : ControllerBase
     {
         private readonly IRagService _ragService;

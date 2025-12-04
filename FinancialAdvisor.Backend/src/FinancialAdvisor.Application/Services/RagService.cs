@@ -1,10 +1,7 @@
 namespace FinancialAdvisor.Application.Services;
 
-public class RagService
+public class RagService 
 {
-    public Task<object> QueryAsync(string query)
-    {
-        return Task.FromResult<object>(new { query });
-    }
+    // This is a stub. Real implementation is in API layer.
 }
 

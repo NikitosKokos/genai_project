@@ -1,5 +1,3 @@
-<<<<<<< Current (Your changes)
-=======
 import { WhatsNewPanel } from "./components/WhatsNewPanel";
 import { PortfolioPanel } from "./components/PortfolioPanel";
 import { AssetsPanel } from "./components/AssetsPanel";
@@ -26,4 +24,3 @@ export default function Home() {
     </div>
   );
 }
->>>>>>> Incoming (Background Agent changes)
