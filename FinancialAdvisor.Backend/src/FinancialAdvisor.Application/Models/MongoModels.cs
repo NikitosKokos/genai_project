@@ -249,6 +249,23 @@ namespace FinancialAdvisor.Application.Models
         public BsonDocument Metadata { get; set; }
     }
 
+    // NEW: Portfolio History for Performance Chart
+    [BsonCollection("portfolio_history")]
+    public class PortfolioHistory
+    {
+        [BsonId]
+        public ObjectId Id { get; set; }
+
+        [BsonElement("session_id")]
+        public string SessionId { get; set; }
+
+        [BsonElement("date")]
+        public DateTime Date { get; set; }
+
+        [BsonElement("total_value")]
+        public decimal TotalValue { get; set; }
+    }
+
     // Attribute to mark collections
     [AttributeUsage(AttributeTargets.Class)]
     public class BsonCollectionAttribute : Attribute

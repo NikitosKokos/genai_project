@@ -145,15 +145,23 @@ namespace FinancialAdvisor.Api.Controllers
 
                 var totalValue = portfolio.CashBalance + holdingsValue;
 
+                // Get Portfolio History for Chart
+                var historyDocs = await _mongoContext.PortfolioHistory
+                    .Find(h => h.SessionId == sessionId)
+                    .SortBy(h => h.Date)
+                    .Limit(30) // Last 30 entries
+                    .ToListAsync();
+
+                // If we have history, use it. Otherwise, fallback to a single current point.
+                var performanceData = historyDocs.Any() 
+                    ? historyDocs.Select(h => new { date = h.Date.ToString("MMM dd"), value = h.TotalValue })
+                    : new[] { new { date = DateTime.UtcNow.ToString("MMM dd"), value = totalValue } };
+
                 return Ok(new {
                     totalValue = totalValue,
                     cashBalance = portfolio.CashBalance,
                     holdings = holdings,
-                    // Mock performance chart for now (last 7 days)
-                    performance = Enumerable.Range(0, 7).Select(i => new {
-                        date = DateTime.UtcNow.AddDays(-6 + i).ToString("MMM dd"),
-                        value = totalValue * (1 + (decimal)(new Random().NextDouble() * 0.05 - 0.025))
-                    })
+                    performance = performanceData
                 });
             }
             catch (Exception ex)

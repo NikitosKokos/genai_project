@@ -40,6 +40,9 @@ namespace FinancialAdvisor.Infrastructure.Data
 
         public IMongoCollection<ChatMessage> ChatHistory =>
             _database.GetCollection<ChatMessage>("chat_history");
+
+        public IMongoCollection<PortfolioHistory> PortfolioHistory =>
+            _database.GetCollection<PortfolioHistory>("portfolio_history");
     }
 }
 

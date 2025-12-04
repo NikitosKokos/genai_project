@@ -48,6 +48,33 @@ namespace FinancialAdvisor.Infrastructure.Services
                     await _mongoContext.Assets.InsertManyAsync(initialAssets, cancellationToken: cancellationToken);
                     _logger.LogInformation($"Seeded {initialAssets.Count} assets.");
                 }
+
+                // Seed Portfolio History if empty (for default-session)
+                var historyCount = await _mongoContext.PortfolioHistory.CountDocumentsAsync(h => h.SessionId == "default-session", cancellationToken: cancellationToken);
+                if (historyCount == 0)
+                {
+                    var history = new List<PortfolioHistory>();
+                    var baseValue = 100000m;
+                    var random = new Random();
+                    
+                    // Generate last 30 days of history
+                    for (int i = 30; i >= 0; i--)
+                    {
+                        // Simulate some daily fluctuation (+- 2%)
+                        var change = (decimal)(random.NextDouble() * 0.04 - 0.02);
+                        baseValue = baseValue * (1 + change);
+                        
+                        history.Add(new PortfolioHistory 
+                        { 
+                            SessionId = "default-session",
+                            Date = DateTime.UtcNow.AddDays(-i).Date,
+                            TotalValue = Math.Round(baseValue, 2)
+                        });
+                    }
+
+                    await _mongoContext.PortfolioHistory.InsertManyAsync(history, cancellationToken: cancellationToken);
+                    _logger.LogInformation($"Seeded {history.Count} days of portfolio history.");
+                }
             }
             catch (Exception ex)
             {
