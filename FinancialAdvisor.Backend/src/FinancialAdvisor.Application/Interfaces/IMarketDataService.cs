@@ -1,7 +1,12 @@
-namespace FinancialAdvisor.Application.Interfaces;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using FinancialAdvisor.Application.Models;
 
-public interface IMarketDataService
+namespace FinancialAdvisor.Application.Interfaces
 {
-    Task<object> GetMarketDataAsync(string symbol);
+    public interface IMarketDataService
+    {
+        Task<List<MarketDataCache>> GetMarketDataAsync(List<string> symbols);
+        string FormatMarketContext(List<MarketDataCache> marketData);
+    }
 }
-

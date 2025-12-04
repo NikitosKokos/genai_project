@@ -1,7 +1,13 @@
 using FinancialAdvisor.Application.Interfaces;
 using FinancialAdvisor.RAG.Services;
 using FinancialAdvisor.Infrastructure.ExternalServices;
+using FinancialAdvisor.Application.Models;
 using Microsoft.Extensions.Configuration;
+using System.Threading.Tasks;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Runtime.CompilerServices;
 
 namespace FinancialAdvisor.Api.Services;
 
@@ -35,6 +41,42 @@ public class RagService : IRagService
             message = response,
             context = context
         };
+    }
+
+    public async Task<ChatResponse> ProcessQueryAsync(string userQuery, string sessionId)
+    {
+        var result = await QueryAsync(userQuery);
+        
+        string message = "No response";
+        if (result != null)
+        {
+            var props = result.GetType().GetProperty("message");
+            if (props != null)
+            {
+                message = props.GetValue(result)?.ToString() ?? message;
+            }
+        }
+
+        return new ChatResponse 
+        { 
+            Advice = message,
+            Timestamp = DateTime.UtcNow
+        };
+    }
+
+    public async IAsyncEnumerable<string> ProcessQueryStreamAsync(string userQuery, string sessionId, [EnumeratorCancellation] CancellationToken cancellationToken = default, bool enableReasoning = false, int documentCount = 3)
+    {
+        var result = await QueryAsync(userQuery);
+        string message = "No response";
+        if (result != null)
+        {
+            var props = result.GetType().GetProperty("message");
+            if (props != null)
+            {
+                message = props.GetValue(result)?.ToString() ?? message;
+            }
+        }
+        yield return message;
     }
 
     private object GenerateMockResponse(string query)

@@ -13,6 +13,14 @@ namespace FinancialAdvisor.Application.Interfaces
             string ragContext,
             Session session
         );
+        string ConstructAugmentedUserPrompt(
+            string userQuery,
+            string portfolioContext,
+            string marketContext,
+            string ragContext,
+            Session session,
+            List<ChatMessage> history
+        );
         string PostProcessModelOutput(string modelOutput);
     }
 }

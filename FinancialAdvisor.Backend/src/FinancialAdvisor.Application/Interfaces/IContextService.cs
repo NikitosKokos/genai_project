@@ -9,5 +9,9 @@ namespace FinancialAdvisor.Application.Interfaces
         Task<Session> GetSessionAsync(string sessionId);
         Task<PortfolioSnapshot> GetPortfolioAsync(string sessionId);
         string FormatPortfolioContext(PortfolioSnapshot portfolio);
+        
+        // Chat History
+        Task AddChatMessageAsync(string sessionId, ChatMessage message);
+        Task<List<ChatMessage>> GetChatHistoryAsync(string sessionId, int limit = 6);
     }
 }

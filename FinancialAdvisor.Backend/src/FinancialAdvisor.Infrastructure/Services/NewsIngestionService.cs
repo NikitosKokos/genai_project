@@ -1,153 +1,148 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net.Http;
-using System.ServiceModel.Syndication;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Xml;
-using FinancialAdvisor.Application.Interfaces;
-using FinancialAdvisor.Application.Models;
-using FinancialAdvisor.Infrastructure.Data;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection; // Added this
+using FinancialAdvisor.Infrastructure.Data;
+using FinancialAdvisor.Application.Interfaces;
+using FinancialAdvisor.Application.Models;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace FinancialAdvisor.Infrastructure.Services
 {
     public class NewsIngestionService : BackgroundService
     {
         private readonly IServiceProvider _serviceProvider;
-        private readonly MongoDbContext _mongoContext;
-        private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<NewsIngestionService> _logger;
-        // Switch to Google News RSS for reliability
-        private const string RSS_URL = "https://news.google.com/rss/search?q=stock+market+finance&hl=en-US&gl=US&ceid=US:en";
-        private const int UPDATE_INTERVAL_HOURS = 4;
-        private const int NEWS_RETENTION_HOURS = 24;
+        private readonly TimeSpan _interval = TimeSpan.FromHours(1); // Run hourly
 
-        public NewsIngestionService(
-            IServiceProvider serviceProvider,
-            MongoDbContext mongoContext,
-            IHttpClientFactory httpClientFactory,
-            ILogger<NewsIngestionService> logger)
+        public NewsIngestionService(IServiceProvider serviceProvider, ILogger<NewsIngestionService> logger)
         {
             _serviceProvider = serviceProvider;
-            _mongoContext = mongoContext;
-            _httpClientFactory = httpClientFactory;
             _logger = logger;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            Console.WriteLine("NewsIngestionService: Service starting...");
-            _logger.LogInformation("News Ingestion Service started.");
-
-            // Yield to ensure app startup completes
-            await Task.Yield();
-
-            // Initial delay to allow dependent services (like Embedding) to become ready
-            await Task.Delay(5000, stoppingToken);
+            _logger.LogInformation("News Ingestion Service is starting.");
 
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
-                    Console.WriteLine($"NewsIngestionService: Fetching news from {RSS_URL}...");
-                    await FetchAndIngestNewsAsync(stoppingToken);
-                    await CleanupOldNewsAsync(stoppingToken);
-                    Console.WriteLine("NewsIngestionService: Cycle complete.");
+                    await ProcessNewsIngestionAsync(stoppingToken);
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"NewsIngestionService: Error - {ex.Message}");
-                    _logger.LogError(ex, "Error in News Ingestion Service cycle.");
+                    _logger.LogError(ex, "Error occurred executing News Ingestion.");
                 }
 
-                await Task.Delay(TimeSpan.FromHours(UPDATE_INTERVAL_HOURS), stoppingToken);
+                // Wait for next cycle
+                await Task.Delay(_interval, stoppingToken);
             }
         }
 
-        private async Task FetchAndIngestNewsAsync(CancellationToken stoppingToken)
+        private async Task ProcessNewsIngestionAsync(CancellationToken stoppingToken)
         {
-            using var scope = _serviceProvider.CreateScope();
-            var embeddingService = scope.ServiceProvider.GetRequiredService<IEmbeddingService>();
-            var client = _httpClientFactory.CreateClient();
-
-            try 
+            using (var scope = _serviceProvider.CreateScope())
             {
-                client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-                
-                // Use byte array to avoid encoding issues
-                var data = await client.GetByteArrayAsync(RSS_URL, stoppingToken);
-                using var stream = new System.IO.MemoryStream(data);
-                using var reader = XmlReader.Create(stream);
-                var feed = SyndicationFeed.Load(reader);
+                var mongoContext = scope.ServiceProvider.GetRequiredService<MongoDbContext>();
+                var embeddingService = scope.ServiceProvider.GetRequiredService<IEmbeddingService>();
 
-                int count = 0;
-                foreach (var item in feed.Items.Take(20)) // Limit to 20 items
+                _logger.LogInformation("Fetching latest market news...");
+
+                // Mock News Feed - In production this would call an external News API (Bloomberg, Reuters, AlphaVantage)
+                var newArticles = GetMockNewsArticles();
+
+                foreach (var article in newArticles)
                 {
                     if (stoppingToken.IsCancellationRequested) break;
 
-                    var title = item.Title.Text;
-                    var summary = item.Summary?.Text ?? item.Title.Text;
-                    var link = item.Links.FirstOrDefault()?.Uri.ToString() ?? "";
-                    var pubDate = item.PublishDate.DateTime;
-                    if (pubDate == DateTime.MinValue) pubDate = DateTime.UtcNow;
-
-                    // Check existence
-                    var exists = await _mongoContext.FinancialDocuments.Find(
-                        d => d.Title == title && d.Category == "News"
-                    ).AnyAsync(stoppingToken);
+                    // Check if article already exists (deduplication by Title for MVP)
+                    var exists = await mongoContext.FinancialDocuments
+                        .Find(d => d.Title == article.Title)
+                        .AnyAsync(stoppingToken);
 
                     if (!exists)
                     {
-                        Console.WriteLine($"NewsIngestionService: Embedding '{title}'...");
-                        var embedding = await embeddingService.EmbedAsync(title + " " + summary);
-                        
-                        var doc = new FinancialDocument
-                        {
-                            Title = title,
-                            Content = summary,
-                            Source = "Google News",
-                            Category = "News",
-                            CreatedAt = DateTime.UtcNow, 
-                            Embedding = embedding.Select(f => (double)f).ToArray(),
-                            Metadata = new BsonDocument 
-                            {
-                                { "link", link },
-                                { "published_at", pubDate }
-                            }
-                        };
+                        _logger.LogInformation($"Ingesting article: {article.Title}");
 
-                        await _mongoContext.FinancialDocuments.InsertOneAsync(doc, cancellationToken: stoppingToken);
-                        count++;
+                        // Generate Embedding
+                        try
+                        {
+                            var embeddingFloat = await embeddingService.EmbedAsync(article.Content);
+                            
+                            // Convert float[] to double[] for storage if model requires double, 
+                            // or keep consistent. Model has double[].
+                            var embeddingDouble = Array.ConvertAll(embeddingFloat, x => (double)x);
+
+                            var doc = new FinancialDocument
+                            {
+                                Id = ObjectId.GenerateNewId(),
+                                Title = article.Title,
+                                Content = article.Content,
+                                Source = article.Source,
+                                Category = "News",
+                                CreatedAt = DateTime.UtcNow,
+                                Embedding = embeddingDouble,
+                                Metadata = new BsonDocument
+                                {
+                                    { "ingested_at", DateTime.UtcNow },
+                                    { "sentiment", "neutral" } // Placeholder for sentiment analysis
+                                }
+                            };
+
+                            await mongoContext.FinancialDocuments.InsertOneAsync(doc, cancellationToken: stoppingToken);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"Failed to embed/save article: {article.Title}");
+                        }
                     }
                 }
-                Console.WriteLine($"NewsIngestionService: Ingested {count} new items.");
-            }
-            catch (Exception ex)
-            {
-                 Console.WriteLine($"NewsIngestionService: Fetch failed: {ex.Message}");
-                 _logger.LogError(ex, "Failed to fetch or parse RSS feed.");
             }
         }
 
-        private async Task CleanupOldNewsAsync(CancellationToken stoppingToken)
+        private List<MockArticle> GetMockNewsArticles()
         {
-            var cutoff = DateTime.UtcNow.AddHours(-NEWS_RETENTION_HOURS);
-            var filter = Builders<FinancialDocument>.Filter.And(
-                Builders<FinancialDocument>.Filter.Eq(d => d.Category, "News"),
-                Builders<FinancialDocument>.Filter.Lt(d => d.CreatedAt, cutoff)
-            );
-
-            var result = await _mongoContext.FinancialDocuments.DeleteManyAsync(filter, stoppingToken);
-            if (result.DeletedCount > 0)
+            var now = DateTime.UtcNow;
+            return new List<MockArticle>
             {
-                _logger.LogInformation($"Cleaned up {result.DeletedCount} old news items.");
-            }
+                new MockArticle 
+                { 
+                    Title = "Fed Signals Potential Rate Cuts in late 2025", 
+                    Content = "The Federal Reserve Chairman hinted at a possibility of interest rate cuts starting late 2025 if inflation metrics continue to show a downward trend towards the 2% target. Markets reacted positively with S&P 500 rising 1.2%.",
+                    Source = "Financial Times"
+                },
+                new MockArticle 
+                { 
+                    Title = "Apple Unveils New AI Features for iPhone 17", 
+                    Content = "Apple (AAPL) demonstrated new on-device generative AI capabilities for the upcoming iPhone 17 lineup, promising enhanced Siri interactions and real-time photo editing. Analysts predict a super-cycle upgrade.",
+                    Source = "TechCrunch"
+                },
+                new MockArticle 
+                { 
+                    Title = "Oil Prices Surge Amidst Geopolitical Tensions", 
+                    Content = "Crude oil futures jumped 4% today as supply chain concerns mounted following new geopolitical escalations in the Middle East. Energy stocks (XLE) saw significant inflows.",
+                    Source = "Bloomberg"
+                },
+                 new MockArticle 
+                { 
+                    Title = "Tesla Misses Delivery Estimates, Stock Slides", 
+                    Content = "Tesla (TSLA) reported Q4 deliveries of 450k vehicles, missing analyst expectations of 480k. The stock is down 5% in pre-market trading as concerns over EV demand softening grow.",
+                    Source = "CNBC"
+                }
+            };
+        }
+
+        private class MockArticle
+        {
+            public string Title { get; set; }
+            public string Content { get; set; }
+            public string Source { get; set; }
         }
     }
 }

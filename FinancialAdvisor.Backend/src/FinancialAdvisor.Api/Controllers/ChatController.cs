@@ -10,7 +10,7 @@ using Microsoft.Extensions.Logging;
 namespace FinancialAdvisor.Api.Controllers
 {
     [ApiController]
-    [Route("api/rag")]
+    [Route("api/chat")]
     public class ChatController : ControllerBase
     {
         private readonly IRagService _ragService;
@@ -45,9 +45,9 @@ namespace FinancialAdvisor.Api.Controllers
         [HttpPost("stream")]
         public async Task StreamQuery([FromBody] ChatQueryRequest request)
         {
-            Response.Headers.Add("Content-Type", "text/plain");
-            Response.Headers.Add("Cache-Control", "no-cache");
-            Response.Headers.Add("Connection", "keep-alive");
+            Response.Headers.Append("Content-Type", "text/plain");
+            Response.Headers.Append("Cache-Control", "no-cache");
+            Response.Headers.Append("Connection", "keep-alive");
 
             var responseStream = Response.BodyWriter;
             var cancellation = HttpContext.RequestAborted;

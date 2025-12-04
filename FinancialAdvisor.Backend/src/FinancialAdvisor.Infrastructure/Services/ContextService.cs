@@ -69,5 +69,27 @@ namespace FinancialAdvisor.Infrastructure.Services
 Total Value: ${portfolio.TotalValue}
 Cash Balance: ${portfolio.CashBalance}";
         }
+
+        public async Task AddChatMessageAsync(string sessionId, ChatMessage message)
+        {
+            message.SessionId = sessionId;
+            if (message.Id == ObjectId.Empty) message.Id = ObjectId.GenerateNewId();
+            if (message.CreatedAt == default) message.CreatedAt = DateTime.UtcNow;
+            
+            await _mongoContext.ChatHistory.InsertOneAsync(message);
+        }
+
+        public async Task<List<ChatMessage>> GetChatHistoryAsync(string sessionId, int limit = 6)
+        {
+            // Get last N messages, but we want them in chronological order for the prompt
+            var messages = await _mongoContext.ChatHistory
+                .Find(m => m.SessionId == sessionId)
+                .SortByDescending(m => m.CreatedAt)
+                .Limit(limit)
+                .ToListAsync();
+
+            messages.Reverse(); // Oldest first
+            return messages;
+        }
     }
 }

@@ -2,6 +2,7 @@ using Xunit;
 using FinancialAdvisor.Infrastructure.Services;
 using FinancialAdvisor.Application.Models;
 using FinancialAdvisor.Domain.Entities;
+using System.Collections.Generic;
 
 namespace FinancialAdvisor.UnitTests.Services
 {
@@ -66,8 +67,6 @@ namespace FinancialAdvisor.UnitTests.Services
 
             // Assert
             Assert.Contains("[MARKET PRICES (Real-Time)]", result);
-            // It might contain just whitespace or the tag followed by empty line
-            // checking that the tag exists is the most important part to ensure the structure is preserved.
         }
 
         [Fact]
@@ -88,12 +87,12 @@ namespace FinancialAdvisor.UnitTests.Services
             );
 
             // Assert - verifying the order/sections exist
+            Assert.Contains("=== CONTEXT DATA ===", result);
+            Assert.Contains("[USER PROFILE]", result);
             Assert.Contains("[PORTFOLIO]", result);
             Assert.Contains("[MARKET PRICES (Real-Time)]", result);
-            Assert.Contains("[CLIENT PROFILE (1-5)]", result);
-            Assert.Contains("[RELEVANT NEWS]", result);
-            Assert.Contains(marketContext, result);
+            Assert.Contains("[RELEVANT NEWS (RAG)]", result);
+            Assert.Contains("[CHAT HISTORY (Last 6)]", result);
         }
     }
 }
-

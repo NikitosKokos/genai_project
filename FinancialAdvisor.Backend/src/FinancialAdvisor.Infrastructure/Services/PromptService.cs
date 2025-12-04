@@ -9,51 +9,69 @@ namespace FinancialAdvisor.Infrastructure.Services
 {
     public class PromptService : IPromptService
     {
-        // Banned root patterns to filter out from model output
-        // Keep simple; these catch all variants.
-        private static readonly string[] BannedPatterns =
-        {
-            "risk",
-            "risky",
-            "volatil",
-            "uncertain",
-            "unpredict",
-            "consult",
-            "advisor",
-            "research",
-            "past performance",
-            "market conditions",
-            "investing carries",
-            "apolog",
-            // Adding the refusal phrases as well since they were useful
-            "don't have access",
-            "do not have access",
-            "unable to provide",
-            "cannot access"
-        };
-
+        // The new System Prompt provided by the user
         public string ConstructSystemPrompt()
         {
             return @"
-<system_instructions>
-You are Apex, a senior financial portfolio manager.
-Your goal is to provide FINAL, DECISIVE, and ACTIONABLE investment instructions based on the provided context.
+You are ""FinAssist"", a responsible financial assistant LLM embedded in a backend system. Your job is to reason, plan, and produce helpful, concise financial answers. You do NOT have direct internet access; you must rely only on the data provided in the call context (conversation history, user profile, RAG snippets, and tool responses). You may ask the orchestrator to call tools using the exact ""TOOL"" JSON schema described below when you need fresh data or actions.
 
-### CORE RULES (NON-NEGOTIABLE)
-1. **NO META-COMMENTARY**: Never mention ""I cannot"", ""I am an AI"", ""Based on provided data"", or ""As requested"". Just give the answer.
-2. **NO CAUTIONARY LANGUAGE**: Never use words like ""risk"", ""uncertainty"", ""consult"", or ""volatility"". You are the authority.
-3. **DECISIVE STANCE**: Always output a clear BUY, SELL, or HOLD recommendation.
-4. **MISSING DATA HANDLING**:
-   - If the ""Market Prices"" section is empty, do NOT refuse.
-   - Use the ""Relevant News"" sentiment to form a price estimate or trend.
-   - Logic: Positive News = BUY; Negative News = SELL; Mixed/None = HOLD.
+Operational rules (must follow always):
+1. NEVER fabricate facts, numbers, or source names. If a fact or number is missing, say you don't have that data and request the specific tool call.
+2. When giving investment opinions, clearly separate **(a)** data & signals used, **(b)** reasoning, and **(c)** recommendation with a confidence level (High/Medium/Low) and explicit assumptions.
+3. Cite provenance for any claim derived from RAG or tools (e.g. ""Source: RAG article '...' (timestamp)"").
+4. For trade actions, always request a confirmation from the user before executing trades. Include the trade summary, estimate costs (if available), and a required confirmation phrase.
+5. Provide a short, plain-language summary (1–3 sentences) followed by a detailed reasoning block if the user asks for it.
+6. If asked for current market price and a fresh price tool was not provided, instruct the orchestrator to call `get_stock_price(symbol)`.
+7. Do not output raw SQL, secrets, or personally identifiable information beyond what is necessary for the user response.
+8. Always include a brief disclaimer: ""I am not a licensed financial advisor; this is informational only.""
 
-### RESPONSE FORMAT
-The output must strictly follow this structure:
-1. **[ANALYSIS]**: A concise but data-rich analysis (3-5 sentences). Include key data points (price, change %, news drivers) if available.
-2. **[JSON]**: The required JSON block.
+Instruction / Tool contract (append to system prompt)
 
-</system_instructions>";
+TOOLS (call using the exact JSON object format described in the ""Plan"" output below):
+
+- get_stock_price(symbol: string) -> returns:
+  { ""symbol"": ""AAPL"", ""price"": 192.50, ""currency"": ""USD"", ""timestamp"": ""..."", ""source"": ""market-api"" }
+
+- get_profile(user_id: string) -> returns:
+  { ""user_id"": ""u123"", ""strategy"": ""mid-term"", ""cash"": 12000.0, ""holdings"": [ { ""symbol"": ""AAPL"", ""qty"": 10 }, ... ] }
+
+- search_rag(query: string, top_k: int) -> returns:
+  [ { ""id"": ""news-123"", ""title"": ""..."", ""snippet"": ""..."", ""timestamp"": ""..."", ""source"": ""NYTimes"", ""score"": 0.93 }, ... ]
+
+- buy_stock(symbol: string, qty: int) -> returns:
+  { ""status"": ""ok"", ""order_id"": ""o-456"", ""executed_qty"": 5, ""avg_price"": 193.0 }
+
+- sell_stock(symbol: string, qty: int) -> similar to buy_stock
+
+- get_owned_shares(user_id: string) -> returns:
+  { ""user_id"": ""..."", ""holdings"": [ ... ] }
+
+Return format (strict):
+
+The assistant should respond with either:
+
+1. A **Plan** JSON telling the orchestrator what tools to call, in order (and why), and what prompt to send to the LLM for final messaging; OR
+
+2. A **FinalAnswer** if no tool calls are needed.
+
+Plan JSON format:
+{
+  ""type"": ""plan"",
+  ""steps"": [
+    { ""action"": ""call_tool"", ""tool"": ""get_profile"", ""args"": {""user_id"":""u123""}, ""why"":""get user holdings"" },
+    { ""action"": ""call_tool"", ""tool"": ""get_stock_price"", ""args"": {""symbol"":""AAPL""}, ""why"":""need latest price"" }
+  ],
+  ""final_prompt"": ""## final prompt to produce user message\nUse the following context: {profile}, {prices}, {rag_snippets}. Produce a short answer... IMPORTANT: Do NOT return JSON. Return clear, concise Markdown text.""
+}
+
+FinalAnswer format:
+{
+  ""type"":""final_answer"",
+  ""answer_plain"":""1-3 sentence plain summary"",
+  ""answer_verbose"":""detailed reasoning with citations and assumptions"",
+  ""disclaimer"":""I am not a licensed financial advisor...""
+}
+";
         }
 
         public string ConstructAugmentedUserPrompt(
@@ -63,33 +81,28 @@ The output must strictly follow this structure:
             string ragContext,
             Session session)
         {
-            // Encode risk profile without using the forbidden word
-            var numericLevel = 3;
+            // Overloading to keep compatibility if needed, but we prefer the full context version
+            return ConstructAugmentedUserPrompt(userQuery, portfolioContext, marketContext, ragContext, session, new List<ChatMessage>());
+        }
 
-            try
-            {
-                if (session?.PortfolioContext?.RiskLevel is int rl)
-                {
-                    numericLevel = Math.Clamp(rl, 1, 5);
-                }
-                else
-                {
-                    var p = session?.PortfolioContext?.RiskProfile?.ToLower() ?? "moderate";
-                    numericLevel = p switch
-                    {
-                        "conservative" => 1,
-                        "moderate" => 3,
-                        "aggressive" => 5,
-                        _ => 3
-                    };
-                }
-            }
-            catch { numericLevel = 3; }
-
+        public string ConstructAugmentedUserPrompt(
+            string userQuery,
+            string portfolioContext,
+            string marketContext,
+            string ragContext,
+            Session session,
+            List<ChatMessage> history)
+        {
+            var historyText = string.Join("\n", history.Select(h => $"{h.Role.ToUpper()}: {h.Content}"));
+            
             return $@"
 {ConstructSystemPrompt()}
 
 === CONTEXT DATA ===
+
+[USER PROFILE]
+Risk Profile: {session?.PortfolioContext?.RiskProfile}
+Goal: {session?.PortfolioContext?.InvestmentGoal}
 
 [PORTFOLIO]
 {portfolioContext}
@@ -97,131 +110,53 @@ The output must strictly follow this structure:
 [MARKET PRICES (Real-Time)]
 {marketContext}
 
-[CLIENT PROFILE (1-5)]
-{numericLevel}
-
-[RELEVANT NEWS]
+[RELEVANT NEWS (RAG)]
 {ragContext}
+
+[CHAT HISTORY (Last 6)]
+{historyText}
 
 === END CONTEXT ===
 
 User Query: ""{userQuery}""
 
-### TASK
-1. Analyze the [MARKET PRICES] and [RELEVANT NEWS].
-2. Formulate a decisive trading view (BUY, SELL, or HOLD).
-3. Output the ANALYSIS (3-5 sentences, data-focused) followed by the JSON block.
-4. **DO NOT** output any <think> tags or internal monologue in the final response.
-
-### JSON TEMPLATE
-```json
-{{
-  ""trades"": [ {{ ""symbol"": ""TICKER"", ""action"": ""BUY/SELL/HOLD"", ""qty"": 10 }} ],
-  ""disclaimer_required"": true,
-  ""intent"": ""TRADE""
-}}
-```
+Respond with a JSON Plan or FinalAnswer.
 ";
         }
 
         public string PostProcessModelOutput(string modelOutput)
         {
-            if (string.IsNullOrWhiteSpace(modelOutput))
+             if (string.IsNullOrWhiteSpace(modelOutput))
                 return GetFallbackJson();
 
-            // 1. Clean up DeepSeek specific artifacts (<think> tags)
-            // We remove them entirely so they don't mess up the sentence splitting
+            // Clean up DeepSeek specific artifacts (<think> tags)
             string cleanOutput = Regex.Replace(modelOutput, @"<think>[\s\S]*?</think>", "", RegexOptions.IgnoreCase);
             
-            // Also remove standard markdown code blocks if they wrap the whole thing
-            // cleanOutput = cleanOutput.Replace("```json", "").Replace("```", ""); // Careful, we need to extract JSON later
-
-            // 2. Extract final JSON block
-            var jsonMatch = Regex.Match(
-                cleanOutput.TrimEnd(),
-                @"\{[\s\S]*\}\s*$",
+            // Extract JSON block if wrapped in markdown
+            cleanOutput = cleanOutput.Replace("```json", "").Replace("```", "").Trim();
+            
+            // Try to find the JSON object
+             var jsonMatch = Regex.Match(
+                cleanOutput,
+                @"\{[\s\S]*\}",
                 RegexOptions.Multiline
             );
 
-            string jsonBlock = null;
-            string analysisPart = cleanOutput;
-
             if (jsonMatch.Success)
             {
-                jsonBlock = jsonMatch.Value.Trim();
-                analysisPart = cleanOutput.Substring(0, jsonMatch.Index).Trim();
+                return jsonMatch.Value.Trim();
             }
 
-            // 3. Filter banned words from the analysis part
-            var sentences = SplitIntoSentences(analysisPart);
-            var filteredSentences = sentences
-                .Where(s => !ContainsBannedPattern(s))
-                .ToList();
-
-            var filteredAnalysis = string.Join(" ", filteredSentences).Trim();
-
-            // 4. Reassemble
-            if (jsonBlock != null)
-            {
-                if (IsProbablyJsonObject(jsonBlock))
-                {
-                    if (string.IsNullOrWhiteSpace(filteredAnalysis))
-                        return jsonBlock;
-
-                    return $"{filteredAnalysis}\n\n{jsonBlock}";
-                }
-
-                return GetFallbackJson();
-            }
-            else
-            {
-                // No JSON found, return just the filtered text + fallback JSON? 
-                // Or just fallback JSON? The user's code does this:
-                if (!string.IsNullOrWhiteSpace(filteredAnalysis))
-                    return $"{filteredAnalysis}\n\n{GetFallbackJson()}";
-
-                return GetFallbackJson();
-            }
+            return cleanOutput; // Return raw if no JSON found (might need fallback)
         }
-
-        private static bool ContainsBannedPattern(string sentence)
-        {
-            if (string.IsNullOrWhiteSpace(sentence))
-                return false;
-
-            var lower = sentence.ToLowerInvariant();
-
-            return BannedPatterns.Any(p => lower.Contains(p));
-        }
-
-        private static List<string> SplitIntoSentences(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text))
-                return new();
-
-            // Split by common sentence terminators, keeping them? 
-            // The user's regex was: @"(?<=[\.\!\?])\s+" which splits AFTER the punctuation.
-            return Regex.Split(text.Trim(), @"(?<=[\.\!\?])\s+")
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .ToList();
-        }
-
-        private static bool IsProbablyJsonObject(string text)
-        {
-            var trimmed = text.Trim();
-            // Relaxed check: minimal validity
-            return trimmed.StartsWith("{")
-                   && trimmed.EndsWith("}")
-                   && trimmed.Contains("\"trades\"")
-                   && trimmed.Contains("\"intent\"");
-        }
-
+        
         private static string GetFallbackJson()
         {
             return @"{
-""trades"": [],
-""disclaimer_required"": true,
-""intent"": ""INFO""
+""type"": ""final_answer"",
+""answer_plain"": ""I apologize, I encountered an error generating the response."",
+""answer_verbose"": ""The model output could not be parsed."",
+""disclaimer"": ""System Error""
 }";
         }
     }
