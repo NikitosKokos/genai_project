@@ -1,8 +1,25 @@
 'use client';
 
 import React, { useState } from 'react';
-import { UserCircle, CandlestickChart, Sparkles, X, Check } from 'lucide-react';
+import { UserCircle, Sparkles, X, Check } from 'lucide-react';
 import { useUI } from '../context/UIContext';
+
+const LogoIcon = ({ className = "size-10" }: { className?: string }) => (
+  <div className={`${className} flex items-center justify-center relative transition-transform duration-300 group-hover:scale-105`}>
+    <svg width="100%" height="100%" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* Green Candle */}
+      <rect x="8" y="12" width="10" height="16" rx="2" fill="#10b981" />
+      <line x1="13" y1="8" x2="13" y2="32" stroke="#10b981" strokeWidth="2" strokeLinecap="round" />
+      
+      {/* Red Candle */}
+      <rect x="22" y="16" width="10" height="12" rx="2" fill="#ef4444" />
+      <line x1="27" y1="10" x2="27" y2="30" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+    <div className="absolute -top-1 -right-1 w-[30%] h-[30%] bg-yellow-400 rounded-full border-2 border-white dark:border-zinc-950 flex items-center justify-center">
+      <Sparkles className="w-[60%] h-[60%] text-yellow-900" />
+    </div>
+  </div>
+);
 
 export function Header() {
   const { setModalOpen } = useUI();
@@ -20,20 +37,7 @@ export function Header() {
         className="flex items-center gap-3 cursor-pointer group"
         onClick={handleLogoClick}
       >
-        <div className="size-10 flex items-center justify-center relative transition-transform duration-300 group-hover:scale-105">
-          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-            {/* Green Candle */}
-            <rect x="8" y="12" width="10" height="16" rx="2" fill="#10b981" />
-            <line x1="13" y1="8" x2="13" y2="32" stroke="#10b981" strokeWidth="2" strokeLinecap="round" />
-            
-            {/* Red Candle */}
-            <rect x="22" y="16" width="10" height="12" rx="2" fill="#ef4444" />
-            <line x1="27" y1="10" x2="27" y2="30" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" />
-          </svg>
-          <div className="absolute -top-1 -right-1 size-3 bg-yellow-400 rounded-full border-2 border-white dark:border-zinc-950 flex items-center justify-center">
-            <Sparkles className="size-2 text-yellow-900" />
-          </div>
-        </div>
+        <LogoIcon className="size-10" />
         <div>
           <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-50 flex items-center gap-1 group-hover:text-emerald-500 transition-colors">
             Nova
@@ -76,8 +80,8 @@ export function Header() {
           </div>
           
           <div className="flex flex-col items-center text-center mb-8">
-            <div className="size-16 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-2xl flex items-center justify-center shadow-xl shadow-emerald-500/20 mb-4">
-              <CandlestickChart className="size-8 text-white" />
+            <div className="size-20 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-2xl flex items-center justify-center shadow-xl shadow-emerald-500/20 mb-4 p-4 group">
+              <LogoIcon className="size-full" />
             </div>
             <h2 className="text-3xl font-bold mb-2">Welcome to Nova</h2>
             <p className="text-zinc-500 text-lg">Your Intelligent Wealth Operating System</p>
