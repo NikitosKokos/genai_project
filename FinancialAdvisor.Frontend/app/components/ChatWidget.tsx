@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Minimize2 } from 'lucide-react';
+import { Send, Minimize2, ChevronDown, Info, X, Sparkles, Zap } from 'lucide-react';
 import { useUI } from '../context/UIContext';
 import { api } from '@/lib/api';
 import ReactMarkdown from 'react-markdown';
@@ -24,8 +24,13 @@ export function ChatWidget() {
    const [messages, setMessages] = useState<Message[]>([]);
    const [inputValue, setInputValue] = useState('');
    const [isTyping, setIsTyping] = useState(false);
+   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+   const [isSupernovaEnabled, setIsSupernovaEnabled] = useState(false);
+   const [isInfoModalOpen, setIsInfoModalOpen] = useState(false);
    const messagesEndRef = useRef<HTMLDivElement>(null);
    const inputRef = useRef<HTMLInputElement>(null);
+   const dropdownRef = useRef<HTMLDivElement>(null);
+   const infoModalRef = useRef<HTMLDivElement>(null);
 
    // Refs for streaming - accumulate chunks without triggering re-renders
    const responseBufferRef = useRef('');
@@ -140,7 +145,7 @@ export function ChatWidget() {
          await api.chat.streamMessage(
             userMessage.content,
             'test-session', // Using consistent session
-            true, // Enable chain-of-thought reasoning
+            isSupernovaEnabled, // Enable chain-of-thought reasoning based on Supernova toggle
             (chunk) => {
                console.log('[ChatWidget] ===== RESPONSE CHUNK RECEIVED =====');
                console.log('[ChatWidget] Time:', new Date().toISOString());
@@ -266,6 +271,27 @@ export function ChatWidget() {
       // Do not expand on focus, only on send
    };
 
+   // Close dropdown when clicking outside
+   useEffect(() => {
+      const handleClickOutside = (event: MouseEvent) => {
+         if (
+            dropdownRef.current &&
+            !dropdownRef.current.contains(event.target as Node) &&
+            !infoModalRef.current?.contains(event.target as Node)
+         ) {
+            setIsModelDropdownOpen(false);
+         }
+      };
+
+      if (isModelDropdownOpen) {
+         document.addEventListener('mousedown', handleClickOutside);
+      }
+
+      return () => {
+         document.removeEventListener('mousedown', handleClickOutside);
+      };
+   }, [isModelDropdownOpen]);
+
    if (isModalOpen) return null;
 
    return (
@@ -281,7 +307,7 @@ export function ChatWidget() {
                      value={inputValue}
                      onChange={(e) => setInputValue(e.target.value)}
                      onFocus={handleInputFocus}
-                     className="flex-1 px-6 py-4 bg-white dark:bg-zinc-900 border-2 border-zinc-200 dark:border-zinc-800 rounded-full shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400"
+                     className="flex-1 px-6 py-4 bg-white dark:bg-zinc-900 border-2 border-zinc-200 dark:border-zinc-800 rounded-full shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 placeholder-zinc-500"
                   />
                   <button
                      type="submit"
@@ -294,118 +320,269 @@ export function ChatWidget() {
          )}
 
          {/* Expanded State - Full Chat Interface */}
-         {isExpanded && (
-            <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-3xl bg-white dark:bg-zinc-900 border-x border-t rounded-t-2xl shadow-2xl flex flex-col h-[600px] z-50 animate-in slide-in-from-bottom duration-500 ease-out">
-               {/* Header */}
-               <div className="p-4 border-b bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-zinc-800 dark:to-zinc-900 rounded-t-2xl flex justify-between items-center">
-                  <div className="flex items-center gap-3">
-                     <div className="size-10 bg-blue-600 rounded-full flex items-center justify-center">
-                        <span className="text-white font-bold text-sm">AI</span>
-                     </div>
-                     <div>
-                        <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">
-                           AI Financial Assistant
-                        </h3>
-                        <span className="text-xs text-zinc-500 flex items-center gap-1">
-                           <span className="size-2 bg-green-500 rounded-full"></span>
-                           Connected
-                        </span>
-                     </div>
-                  </div>
-                  <button
-                     onClick={() => setIsExpanded(false)}
-                     className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:scale-110 active:scale-95 rounded-full transition-all duration-200"
-                     aria-label="Minimize chat">
-                     <Minimize2 className="size-5 text-zinc-600 dark:text-zinc-400" />
-                  </button>
-               </div>
-
-               {/* Messages Area */}
-               <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-zinc-50/50 dark:bg-zinc-950/50">
-                  {messages.map((message) => (
-                     <div
-                        key={message.id}
-                        className={`flex ${
-                           message.role === 'user' ? 'justify-end' : 'justify-start'
-                        }`}>
-                        <div
-                           className={`max-w-[80%] p-3 rounded-2xl ${
-                              message.role === 'user'
-                                 ? 'bg-blue-600 text-white rounded-tr-none'
-                                 : 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-tl-none shadow-sm'
-                           }`}>
-                           {message.role === 'assistant' ? (
-                              <>
-                                 {/* Show status if no content yet */}
-                                 {message.status && !message.content && (
-                                    <div className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
-                                       <div className="flex gap-1">
-                                          <div className="size-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-                                          <div className="size-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                                          <div className="size-1.5 bg-zinc-400 rounded-full animate-bounce"></div>
-                                       </div>
-                                       <span>{message.status}</span>
-                                    </div>
-                                 )}
-                                 {/* Chain-of-Thought Reasoning */}
-                                 {message.thinking && !message.content && (
-                                    <div className="">
-                                       <div
-                                          className="text-xs text-zinc-600 dark:text-zinc-500 leading-relaxed whitespace-pre-wrap font-mono"
-                                          dangerouslySetInnerHTML={{
-                                             __html: DOMPurify.sanitize(message.thinking, {
-                                                ALLOWED_TAGS: [],
-                                                ALLOWED_ATTR: [],
-                                                KEEP_CONTENT: true,
-                                             }),
-                                          }}
-                                       />
-                                    </div>
-                                 )}
-                                 {/* Main Response - Show content if available */}
-                                 {message.content ? (
-                                    <OptimizedMarkdown content={message.content} />
-                                 ) : null}
-                              </>
-                           ) : (
-                              <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                                 {DOMPurify.sanitize(message.content, { ALLOWED_TAGS: [] })}
-                              </p>
-                           )}
-                           <p className="text-xs mt-2 opacity-70">
-                              {message.timestamp.toLocaleTimeString([], {
-                                 hour: '2-digit',
-                                 minute: '2-digit',
-                              })}
-                           </p>
+         {!isExpanded && (
+            <>
+               <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-3xl bg-white dark:bg-zinc-900 border-x border-t rounded-t-2xl shadow-2xl flex flex-col h-[600px] z-50 animate-in slide-in-from-bottom duration-500 ease-out">
+                  {/* Header */}
+                  <div className="p-4 border-b bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-zinc-800 dark:to-zinc-900 rounded-t-2xl flex justify-between items-center">
+                     <div className="flex items-center gap-3">
+                        <div className="size-10 bg-blue-600 rounded-full flex items-center justify-center">
+                           <span className="text-white font-bold text-sm">AI</span>
+                        </div>
+                        <div>
+                           <h3 className="font-semibold text-zinc-900 dark:text-zinc-100">
+                              AI Financial Assistant
+                           </h3>
+                           <span className="text-xs text-zinc-500 flex items-center gap-1">
+                              <span className="size-2 bg-green-500 rounded-full"></span>
+                              Connected
+                           </span>
                         </div>
                      </div>
-                  ))}
-                  <div ref={messagesEndRef} />
-               </div>
-
-               {/* Input Area */}
-               <div className="p-4 border-t bg-white dark:bg-zinc-900 rounded-b-2xl">
-                  <form onSubmit={handleSubmit} className="flex gap-2">
-                     <input
-                        ref={inputRef}
-                        type="text"
-                        placeholder="Ask me anything..."
-                        value={inputValue}
-                        onChange={(e) => setInputValue(e.target.value)}
-                        className="flex-1 px-4 py-3 border-2 border-zinc-200 dark:border-zinc-700 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-950 dark:text-zinc-100 transition-all"
-                        disabled={isTyping}
-                     />
                      <button
-                        type="submit"
-                        className="bg-blue-600 text-white px-6 py-3 rounded-full font-medium hover:bg-blue-700 hover:scale-105 active:scale-95 transition-all duration-200 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-                        disabled={!inputValue.trim() || isTyping}>
-                        <Send className="size-4" />
-                        Send
+                        onClick={() => setIsExpanded(false)}
+                        className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:scale-110 active:scale-95 rounded-full transition-all duration-200"
+                        aria-label="Minimize chat">
+                        <Minimize2 className="size-5 text-zinc-600 dark:text-zinc-400" />
                      </button>
-                  </form>
+                  </div>
+
+                  {/* Messages Area */}
+                  <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-zinc-50/50 dark:bg-zinc-950/50">
+                     {messages.map((message) => (
+                        <div
+                           key={message.id}
+                           className={`flex ${
+                              message.role === 'user' ? 'justify-end' : 'justify-start'
+                           }`}>
+                           <div
+                              className={`max-w-[80%] p-3 rounded-2xl ${
+                                 message.role === 'user'
+                                    ? 'bg-blue-600 text-white rounded-tr-none'
+                                    : 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-tl-none shadow-sm'
+                              }`}>
+                              {message.role === 'assistant' ? (
+                                 <>
+                                    {/* Show status if no content yet */}
+                                    {message.status && !message.content && (
+                                       <div className="flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
+                                          <div className="flex gap-1">
+                                             <div className="size-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:-0.3s]"></div>
+                                             <div className="size-1.5 bg-zinc-400 rounded-full animate-bounce [animation-delay:-0.15s]"></div>
+                                             <div className="size-1.5 bg-zinc-400 rounded-full animate-bounce"></div>
+                                          </div>
+                                          <span>{message.status}</span>
+                                       </div>
+                                    )}
+                                    {/* Chain-of-Thought Reasoning */}
+                                    {message.thinking && !message.content && (
+                                       <div className="">
+                                          <div
+                                             className="text-xs text-zinc-600 dark:text-zinc-500 leading-relaxed whitespace-pre-wrap font-mono mt-1"
+                                             dangerouslySetInnerHTML={{
+                                                __html: DOMPurify.sanitize(message.thinking, {
+                                                   ALLOWED_TAGS: [],
+                                                   ALLOWED_ATTR: [],
+                                                   KEEP_CONTENT: true,
+                                                }),
+                                             }}
+                                          />
+                                       </div>
+                                    )}
+                                    {/* Main Response - Show content if available */}
+                                    {message.content ? (
+                                       <OptimizedMarkdown content={message.content} />
+                                    ) : null}
+                                 </>
+                              ) : (
+                                 <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                                    {DOMPurify.sanitize(message.content, { ALLOWED_TAGS: [] })}
+                                 </p>
+                              )}
+                              <p className="text-xs mt-2 opacity-70">
+                                 {message.timestamp.toLocaleTimeString([], {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                 })}
+                              </p>
+                           </div>
+                        </div>
+                     ))}
+                     <div ref={messagesEndRef} />
+                  </div>
+
+                  {/* Input Area */}
+                  <div className="p-4 border-t bg-white dark:bg-zinc-900 rounded-b-2xl relative">
+                     <form onSubmit={handleSubmit} className="flex gap-2">
+                        <input
+                           ref={inputRef}
+                           type="text"
+                           placeholder="Ask me anything..."
+                           value={inputValue}
+                           onChange={(e) => setInputValue(e.target.value)}
+                           className="flex-1 px-4 py-3 border-2 border-zinc-200 dark:border-zinc-700 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-950 dark:text-zinc-100 placeholder-zinc-600 transition-all"
+                           disabled={isTyping}
+                        />
+                        <div className="relative" ref={dropdownRef}>
+                           <button
+                              type="button"
+                              onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+                              className="text-xs text-zinc-900 dark:text-zinc-500 hover:scale-105 active:scale-100 transition-all duration-200 flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800">
+                              {isSupernovaEnabled ? 'Supernova' : 'default'}
+                              <ChevronDown
+                                 className={`size-3 transition-transform duration-200 ${
+                                    isModelDropdownOpen ? 'rotate-180' : ''
+                                 }`}
+                              />
+                           </button>
+
+                           {/* Dropdown Menu */}
+                           {isModelDropdownOpen && (
+                              <div className="absolute bottom-full right-0 mb-2 w-64 bg-white dark:bg-zinc-800 rounded-xl shadow-2xl border border-zinc-200 dark:border-zinc-700 p-3 animate-in fade-in slide-in-from-bottom-2 duration-200 z-50">
+                                 <div className="flex items-center justify-between mb-1.5">
+                                    <span className="text-sm font-medium text-zinc-900 dark:text-zinc-400">
+                                       Model Selection
+                                    </span>
+                                    <button
+                                       onClick={() => {
+                                          setIsInfoModalOpen(true);
+                                       }}
+                                       className="p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-lg transition-colors"
+                                       aria-label="Model information">
+                                       <Info className="size-4 text-zinc-500 dark:text-zinc-400" />
+                                    </button>
+                                 </div>
+
+                                 <div className="flex items-center justify-between p-3 bg-zinc-50 dark:bg-zinc-900/50 rounded-lg border border-zinc-200 dark:border-zinc-700">
+                                    <div className="flex items-center gap-2">
+                                       {isSupernovaEnabled ? (
+                                          <Sparkles className="size-4 text-amber-500" />
+                                       ) : (
+                                          <Zap className="size-4 text-blue-500" />
+                                       )}
+                                       <div>
+                                          <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                                             {isSupernovaEnabled ? 'Supernova' : 'Default'}
+                                          </div>
+                                          <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                                             {isSupernovaEnabled
+                                                ? 'Advanced reasoning'
+                                                : 'Fast & efficient'}
+                                          </div>
+                                       </div>
+                                    </div>
+                                    <button
+                                       onClick={() => setIsSupernovaEnabled(!isSupernovaEnabled)}
+                                       className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                          isSupernovaEnabled ? 'bg-amber-500' : 'bg-blue-600'
+                                       }`}>
+                                       <span
+                                          className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                             isSupernovaEnabled ? 'translate-x-6' : 'translate-x-1'
+                                          }`}
+                                       />
+                                    </button>
+                                 </div>
+                              </div>
+                           )}
+                        </div>
+                        <button
+                           type="submit"
+                           className="bg-blue-600 text-white px-6 py-3 rounded-full font-medium hover:bg-blue-700 hover:scale-105 active:scale-95 transition-all duration-200 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                           disabled={!inputValue.trim() || isTyping}>
+                           <Send className="size-4" />
+                           Send
+                        </button>
+                     </form>
+                  </div>
                </div>
-            </div>
+               {/* Info Modal */}
+               {isInfoModalOpen && (
+                  <div
+                     className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4 animate-in fade-in duration-200"
+                     ref={infoModalRef}
+                     onClick={() => {
+                        setIsInfoModalOpen(false);
+                     }}>
+                     <div
+                        className="bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl w-full max-w-lg p-8 animate-in zoom-in-95 duration-200 relative overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}>
+                        <div className="absolute top-0 right-0 p-4">
+                           <button
+                              onClick={() => {
+                                 setIsInfoModalOpen(false);
+                              }}
+                              className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full transition-colors">
+                              <X className="size-5" />
+                           </button>
+                        </div>
+
+                        <div className="flex flex-col items-center text-center mb-6">
+                           <div className="size-16 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl flex items-center justify-center shadow-xl shadow-blue-500/20 mb-3 p-4">
+                              <Sparkles className="size-8 text-white" />
+                           </div>
+                           <h2 className="text-2xl font-bold mb-1 text-zinc-900 dark:text-zinc-100">
+                              Model Selection
+                           </h2>
+                           <p className="text-zinc-500 text-sm">
+                              Choose the right model for your needs
+                           </p>
+                        </div>
+
+                        <div className="space-y-4">
+                           <div className="p-4 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-200 dark:border-zinc-700">
+                              <div className="flex items-start gap-3">
+                                 <Zap className="size-5 text-blue-500 mt-0.5 flex-shrink-0" />
+                                 <div>
+                                    <h3 className="font-semibold mb-1 text-zinc-900 dark:text-zinc-100">
+                                       Default Model
+                                    </h3>
+                                    <p className="text-sm text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                                       Fast and efficient, perfect for quick answers and simple
+                                       queries. Provides instant responses with balanced quality and
+                                       speed.
+                                    </p>
+                                 </div>
+                              </div>
+                           </div>
+
+                           <div className="relative p-4 bg-amber-50 dark:bg-amber-900/10 rounded-xl border border-amber-200 dark:border-amber-800 overflow-hidden">
+                              <div className="absolute bottom-0 right-0 h-[88%] opacity-12 grayscale">
+                                 <img
+                                    src="/supernova.png"
+                                    alt="Supernova"
+                                    className="w-full h-full object-contain"
+                                    draggable={false}
+                                 />
+                              </div>
+                              <div className="flex items-start gap-3">
+                                 <Sparkles className="size-5 text-amber-500 mt-0.5 flex-shrink-0" />
+                                 <div>
+                                    <h3 className="font-semibold mb-1 text-zinc-900 dark:text-zinc-100">
+                                       Supernova
+                                    </h3>
+                                    <p className="text-sm text-zinc-600 dark:text-zinc-400 leading-relaxed">
+                                       Advanced reasoning model that provides chain-of-thought
+                                       analysis, gathers more comprehensive data, and delivers
+                                       deeper insights. Best for complex financial questions and
+                                       detailed analysis.
+                                    </p>
+                                 </div>
+                              </div>
+                           </div>
+
+                           <button
+                              onClick={() => {
+                                 setIsInfoModalOpen(false);
+                              }}
+                              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-base shadow-lg shadow-blue-500/25 transition-all">
+                              Got it
+                           </button>
+                        </div>
+                     </div>
+                  </div>
+               )}
+            </>
          )}
       </>
    );
