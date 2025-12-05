@@ -8,6 +8,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import DOMPurify from 'isomorphic-dompurify';
+import Image from 'next/image';
 
 interface Message {
    id: string;
@@ -142,10 +143,15 @@ export function ChatWidget() {
 
          let isFirstChunk = true;
 
+         // Model configuration: Default vs Supernova
+         const enableReasoning = isSupernovaEnabled;
+         const documentCount = isSupernovaEnabled ? 6 : 3;
+
          await api.chat.streamMessage(
             userMessage.content,
             'test-session', // Using consistent session
-            isSupernovaEnabled, // Enable chain-of-thought reasoning based on Supernova toggle
+            enableReasoning,
+            documentCount,
             (chunk) => {
                console.log('[ChatWidget] ===== RESPONSE CHUNK RECEIVED =====');
                console.log('[ChatWidget] Time:', new Date().toISOString());
@@ -320,7 +326,7 @@ export function ChatWidget() {
          )}
 
          {/* Expanded State - Full Chat Interface */}
-         {!isExpanded && (
+         {isExpanded && (
             <>
                <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-3xl bg-white dark:bg-zinc-900 border-x border-t rounded-t-2xl shadow-2xl flex flex-col h-[600px] z-50 animate-in slide-in-from-bottom duration-500 ease-out">
                   {/* Header */}
@@ -423,11 +429,11 @@ export function ChatWidget() {
                            className="flex-1 px-4 py-3 border-2 border-zinc-200 dark:border-zinc-700 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 dark:bg-zinc-950 dark:text-zinc-100 placeholder-zinc-600 transition-all"
                            disabled={isTyping}
                         />
-                        <div className="relative" ref={dropdownRef}>
+                        <div className="relative flex items-center" ref={dropdownRef}>
                            <button
                               type="button"
                               onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
-                              className="text-xs text-zinc-900 dark:text-zinc-500 hover:scale-105 active:scale-100 transition-all duration-200 flex items-center gap-1 px-3 py-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800">
+                              className="text-xs text-zinc-900 dark:text-zinc-500 hover:scale-105 active:scale-100 transition-all duration-200 flex items-center gap-1 px-2 py-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800">
                               {isSupernovaEnabled ? 'Supernova' : 'default'}
                               <ChevronDown
                                  className={`size-3 transition-transform duration-200 ${
@@ -471,7 +477,7 @@ export function ChatWidget() {
                                           </div>
                                        </div>
                                     </div>
-                                    <button
+                                    <div
                                        onClick={() => setIsSupernovaEnabled(!isSupernovaEnabled)}
                                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
                                           isSupernovaEnabled ? 'bg-amber-500' : 'bg-blue-600'
@@ -481,7 +487,7 @@ export function ChatWidget() {
                                              isSupernovaEnabled ? 'translate-x-6' : 'translate-x-1'
                                           }`}
                                        />
-                                    </button>
+                                    </div>
                                  </div>
                               </div>
                            )}
@@ -548,11 +554,14 @@ export function ChatWidget() {
 
                            <div className="relative p-4 bg-amber-50 dark:bg-amber-900/10 rounded-xl border border-amber-200 dark:border-amber-800 overflow-hidden">
                               <div className="absolute bottom-0 right-0 h-[88%] opacity-12 grayscale">
-                                 <img
+                                 <Image
+                                    width={100}
+                                    height={100}
                                     src="/supernova.png"
                                     alt="Supernova"
                                     className="w-full h-full object-contain"
                                     draggable={false}
+                                    unselectable="on"
                                  />
                               </div>
                               <div className="flex items-start gap-3">

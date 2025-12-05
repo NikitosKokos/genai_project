@@ -30,7 +30,7 @@ async function fetchJson<T>(endpoint: string, options?: RequestInit): Promise<T>
 export const api = {
    // Financial Advisor / RAG
    chat: {
-      sendMessage: async (message: string, context?: any) => {
+      sendMessage: async (message: string) => {
          return fetchJson('/Chat/stream', {
             method: 'POST',
             body: JSON.stringify({ message: message, sessionId: 'test' }), // Hardcoded userId for demo
@@ -40,6 +40,7 @@ export const api = {
          message: string,
          sessionId: string,
          enableReasoning: boolean = false,
+         documentCount: number = 3,
          onChunk: (chunk: string) => void,
          onStatus?: (status: string) => void,
          onThinking?: (thinking: string) => void,
@@ -50,13 +51,14 @@ export const api = {
             message: message.substring(0, 50),
             sessionId,
             enableReasoning,
+            documentCount,
          });
 
          // Use the Next.js API route which properly handles streaming
          const response = await fetch(`${API_BASE_URL}/chat/stream`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message, sessionId, enableReasoning }),
+            body: JSON.stringify({ message, sessionId, enableReasoning, documentCount }),
             // Ensure fetch doesn't buffer
             cache: 'no-store',
          });
