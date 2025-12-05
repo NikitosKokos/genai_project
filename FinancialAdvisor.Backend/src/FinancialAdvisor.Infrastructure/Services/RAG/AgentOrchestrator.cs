@@ -69,10 +69,15 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             _logger.LogInformation($"[{sessionId}] Processing Agent Query: {userQuery}");
             yield return "<status>Analyzing request...</status>";
 
-            // 1. Gather Initial Context
-            var history = await _contextService.GetChatHistoryAsync(sessionId, 6);
-            var session = await _contextService.GetSessionAsync(sessionId);
-            var portfolio = await _contextService.GetPortfolioAsync(sessionId);
+            // 1. Gather Initial Context (Parallel for better performance)
+            var historyTask = _contextService.GetChatHistoryAsync(sessionId, 6);
+            var sessionTask = _contextService.GetSessionAsync(sessionId);
+            var portfolioTask = _contextService.GetPortfolioAsync(sessionId);
+            await Task.WhenAll(historyTask, sessionTask, portfolioTask);
+            
+            var history = historyTask.Result;
+            var session = sessionTask.Result;
+            var portfolio = portfolioTask.Result;
 
             // 2. Proactive RAG
             var ragTool = _tools.FirstOrDefault(t => t.Name == "search_rag");
@@ -98,9 +103,69 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
 
             yield return "<status>Planning...</status>";
 
-            // 4. Call LLM (Plan)
-            var llmResponse = await _llmService.GenerateFinancialAdviceAsync(userQuery, fullPrompt, sessionId);
-            var processedResponse = _promptService.PostProcessModelOutput(llmResponse);
+            // 4. Call LLM (Plan) - Stream the planning phase for better UX
+            var accumulatedPlanJson = "";
+            var planJsonComplete = false;
+            
+            await foreach (var token in _llmService.GenerateFinancialAdviceStreamAsync(userQuery, fullPrompt, sessionId, cancellationToken, enableReasoning))
+            {
+                // Forward thinking tokens to frontend during planning
+                if (token.StartsWith("<thinking>"))
+                {
+                    yield return token;
+                }
+                // Accumulate response tokens to build the JSON plan
+                else if (token.StartsWith("<response>"))
+                {
+                    // Extract content from CDATA or regular response
+                    string content;
+                    if (token.Contains("<![CDATA["))
+                    {
+                        var cdataStart = token.IndexOf("<![CDATA[") + 9;
+                        var cdataEnd = token.IndexOf("]]>", cdataStart);
+                        if (cdataEnd > cdataStart)
+                        {
+                            content = token.Substring(cdataStart, cdataEnd - cdataStart);
+                            content = content.Replace("]]]]><![CDATA[>", "]]>");
+                        }
+                        else
+                        {
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        var endTag = token.IndexOf("</response>");
+                        if (endTag > 9)
+                        {
+                            content = token.Substring(9, endTag - 9);
+                            content = content.Replace("&amp;", "&").Replace("&lt;", "<").Replace("&gt;", ">");
+                        }
+                        else
+                        {
+                            continue;
+                        }
+                    }
+                    
+                    accumulatedPlanJson += content;
+                    
+                    // Try to detect if JSON is complete (has closing brace and looks valid)
+                    // This is a heuristic - we'll validate properly after streaming
+                    if (accumulatedPlanJson.Trim().EndsWith("}") && accumulatedPlanJson.Contains("\"type\""))
+                    {
+                        planJsonComplete = true;
+                        // Don't break yet - let the stream finish to ensure we have everything
+                    }
+                }
+                else if (!token.StartsWith("<status>"))
+                {
+                    // Fallback: accumulate any other content
+                    accumulatedPlanJson += token;
+                }
+            }
+            
+            // Process the accumulated JSON plan
+            var processedResponse = _promptService.PostProcessModelOutput(accumulatedPlanJson);
 
             JsonDocument doc = null;
             JsonElement root = default;
