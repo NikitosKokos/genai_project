@@ -55,6 +55,24 @@ namespace FinancialAdvisor.Application.Models
 
         [BsonElement("preferences")]
         public BsonDocument Preferences { get; set; }
+
+        [BsonElement("metadata")]
+        public ConversationMetadata Metadata { get; set; }
+    }
+
+    public class ConversationMetadata
+    {
+        [BsonElement("last_symbol")]
+        public string LastSymbol { get; set; }
+        
+        [BsonElement("last_tool")]
+        public string LastTool { get; set; }
+        
+        [BsonElement("last_action_timestamp")]
+        public DateTime? LastActionTimestamp { get; set; }
+        
+        [BsonElement("tool_call_count")]
+        public int ToolCallCount { get; set; }
     }
 
     public class PortfolioContext

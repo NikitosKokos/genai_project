@@ -41,7 +41,8 @@ namespace FinancialAdvisor.Infrastructure.Tools
                     price = marketData.Price,
                     currency = "USD",
                     timestamp = marketData.LastUpdated.ToString("yyyy-MM-ddTHH:mm:ssZ"),
-                    source = "market-api"
+                    source = "market-api",
+                    summary = $"{marketData.Symbol} is currently trading at ${marketData.Price:F2}."
                 });
             }
             catch (Exception ex)

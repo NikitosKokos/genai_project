@@ -44,16 +44,20 @@ services:
          dockerfile: docker/Dockerfile
       container_name: fin-advisor-backend
       ports:
-         - '5000:5000'
+         - '5002:5000'
       environment:
          - ASPNETCORE_ENVIRONMENT=Development
          - ASPNETCORE_HTTP_PORTS=5000
          - ConnectionStrings__MongoDB=mongodb://mongodb_admin:demo_password@mongodb:27017/financial_advisor?authSource=admin
          - EMBEDDING_SERVICE_URL=http://embedding-service:5001
+         # DeepSeek API (preferred - faster cloud API)
+         - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+         - DEEPSEEK_ENDPOINT=https://api.deepseek.com
+         - DEEPSEEK_MODEL=deepseek-chat
+         - DEEPSEEK_REASONING_MODEL=deepseek-reasoner
+         # Ollama fallback (used if DEEPSEEK_API_KEY is not set)
          - OLLAMA_ENDPOINT=http://ollama:11434
-         # Model selection: 8b (fast), 14b (balanced), 32b/70b (best quality, requires more VRAM)
-         # - OLLAMA_MODEL=deepseek-r1:14b
-         - OLLAMA_MODEL=deepseek-r1:8b
+         - OLLAMA_MODEL=llama3.1:8b
       depends_on:
          mongodb:
             condition: service_healthy
@@ -83,13 +87,13 @@ services:
          - ollama_models:/root/.ollama
       networks:
          - fin-advisor-network
-      deploy:
-         resources:
-            reservations:
-               devices:
-                  - driver: nvidia
-                    count: 1
-                    capabilities: [gpu]
+      # deploy:
+      #    resources:
+      #       reservations:
+      #          devices:
+      #             - driver: nvidia
+      #               count: 1
+      #               capabilities: [gpu]
 
 volumes:
    mongodb_data:

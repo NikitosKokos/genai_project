@@ -42,7 +42,8 @@ namespace FinancialAdvisor.Api.Controllers
                 return Ok(news.Select(n => new {
                     id = n.Id.ToString(),
                     title = n.Title,
-                    summary = n.Content.Length > 100 ? n.Content.Substring(0, 100) + "..." : n.Content,
+                    summary = n.Content.Length > 150 ? n.Content.Substring(0, 150) + "..." : n.Content,
+                    content = n.Content, // Full content for expanded view
                     source = n.Source,
                     publishedAt = n.CreatedAt
                 }));

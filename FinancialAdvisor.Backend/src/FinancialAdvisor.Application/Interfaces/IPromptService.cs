@@ -19,7 +19,8 @@ namespace FinancialAdvisor.Application.Interfaces
             string marketContext,
             string ragContext,
             Session session,
-            List<ChatMessage> history
+            List<ChatMessage> history,
+            string financialHealthSummary = ""
         );
         string PostProcessModelOutput(string modelOutput);
     }
