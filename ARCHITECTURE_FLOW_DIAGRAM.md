@@ -222,9 +222,10 @@ string marketContext = "[]";  // Hardcoded empty - LLM must use tools
 - Formats market data for prompts
 
 **How it uses market_cache**:
-1. **Read**: Checks cache first (if < 5 min old)
+1. **Read**: Checks cache first (if < 15 min old)
 2. **Write**: Updates cache after API fetch
 3. **Format**: Formats cached data for display
+4. **Normalization**: Converts simple symbols (BTC, ETH) to full format (BTC-USD, ETH-USD)
 
 **Code Flow**:
 ```csharp
@@ -266,10 +267,10 @@ GetMarketDataAsync(["BTC-USD"])
 1. Gets all active assets from `assets` collection
 2. Extracts symbols (AAPL, MSFT, BTC-USD, ETH-USD, etc.)
 3. Calls `MarketDataService.GetMarketDataAsync(allSymbols)`
-4. Service fetches and caches all symbols
+4. Service normalizes symbols and fetches/caches all data
 5. Logs success/failure for each symbol
 
-**This should populate BTC-USD and ETH-USD!**
+**Ensures cache is populated proactively for all assets**
 
 ---
 
@@ -400,8 +401,8 @@ GetStockPriceTool.ExecuteAsync("BTC-USD")
 MarketDataService.GetMarketDataAsync(["BTC-USD"])
   ↓
 ├─► Check market_cache (MongoDB)
-│   └─► Query: { symbol: "BTC-USD" }
-│   └─► If found AND < 5 min old → Return cached data ✅
+│   └─► Query: { symbol: "BTC-USD" } (normalized from "BTC")
+│   └─► If found AND < 15 min old → Return cached data ✅
 │
 └─► If cache miss OR > 5 min old:
     ├─► Fetch from Yahoo Finance API

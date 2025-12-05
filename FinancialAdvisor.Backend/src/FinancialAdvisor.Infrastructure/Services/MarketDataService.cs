@@ -97,7 +97,7 @@ namespace FinancialAdvisor.Infrastructure.Services
                     if (cachedData != null)
                     {
                         var cacheAgeMinutes = (DateTime.UtcNow - cachedData.LastUpdated).TotalMinutes;
-                        if (cacheAgeMinutes < 5)
+                        if (cacheAgeMinutes < 15)
                         {
                             _logger.LogInformation("Using cached data for {Symbol} (age: {AgeMinutes:F1} minutes, price: ${Price:F2})", 
                                 symbol, cacheAgeMinutes, cachedData.Price);

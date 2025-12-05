@@ -1,37 +1,42 @@
-# Financial Advisor Backend
+# Financial Advisor System
 
-A .NET 8.0 backend application for a financial advisor system with RAG (Retrieval-Augmented Generation) capabilities, powered by LLM agents and real-time market data.
+A full-stack financial advisor application with RAG (Retrieval-Augmented Generation) capabilities, powered by LLM agents and real-time market data. The system provides intelligent financial advice through a conversational AI interface, combining real-time market data, financial news retrieval, and portfolio management.
 
 ## 🏗️ Project Structure
 
 ```
-FinancialAdvisor.Backend/
-├── src/
-│   ├── FinancialAdvisor.Api/              # Web API layer (Controllers, Middleware)
-│   ├── FinancialAdvisor.Application/       # Application services, interfaces, DTOs
-│   ├── FinancialAdvisor.Domain/           # Domain entities and value objects
-│   ├── FinancialAdvisor.Infrastructure/    # Data access, external services, tools
-│   ├── FinancialAdvisor.RAG/              # RAG pipeline services
-│   ├── FinancialAdvisor.MarketData/       # Market data integration
-│   └── FinancialAdvisor.SharedKernel/     # Shared utilities and constants
-└── tests/
-    ├── FinancialAdvisor.UnitTests/        # Unit tests
-    ├── FinancialAdvisor.IntegrationTests/ # Integration tests
-    └── FinancialAdvisor.E2ETests/        # End-to-end tests
+genai_project/
+├── FinancialAdvisor.Backend/             # .NET 8.0 Backend API
+│   ├── src/
+│   │   ├── FinancialAdvisor.Api/          # Web API layer (Controllers, Middleware)
+│   │   ├── FinancialAdvisor.Application/ # Application services, interfaces, DTOs
+│   │   ├── FinancialAdvisor.Domain/      # Domain entities and value objects
+│   │   ├── FinancialAdvisor.Infrastructure/ # Data access, external services, tools
+│   │   ├── FinancialAdvisor.RAG/        # RAG pipeline services
+│   │   ├── FinancialAdvisor.MarketData/  # Market data integration
+│   │   └── FinancialAdvisor.SharedKernel/ # Shared utilities and constants
+│   ├── docs/                             # Architecture and API documentation
+│   └── tests/                            # Unit, integration, and E2E tests
+├── FinancialAdvisor.Frontend/            # Next.js Frontend
+│   ├── app/                              # Next.js app directory
+│   │   ├── components/                  # React components
+│   │   ├── api/                          # Next.js API routes (proxy)
+│   │   └── context/                     # React context providers
+│   └── lib/                              # Frontend utilities and API client
+└── docker-compose.yml                    # Full stack orchestration
 ```
 
-### Layer Responsibilities
+### Architecture Overview
 
--  **Api**: HTTP endpoints, request/response handling, middleware
--  **Application**: Business logic interfaces, DTOs, service contracts
--  **Domain**: Core business entities (User, Portfolio, Transaction)
--  **Infrastructure**:
-   -  Data persistence (MongoDB)
-   -  External services (Ollama LLM, Embeddings)
-   -  Tools (get_stock_price, search_rag, buy_stock, etc.)
-   -  RAG orchestrator (AgentOrchestrator)
--  **RAG**: Embedding generation, vector search
--  **MarketData**: Real-time market data fetching
+The system uses an **agent-based RAG architecture** where:
+
+-  The LLM acts as a **planner** that decides what tools to call
+-  Tools fetch data **on-demand** (not pre-fetched)
+-  Real-time streaming responses via Server-Sent Events (SSE)
+-  Market data caching with 15-minute TTL
+-  Background services for news ingestion and market data sync
+
+See [Backend Architecture Documentation](FinancialAdvisor.Backend/docs/ARCHITECTURE.md) for detailed information.
 
 ---
 
@@ -71,10 +76,10 @@ Streaming chat query endpoint with real-time token-by-token responses.
 
 ```json
 {
-   "message": "Should I buy Apple stock?",
+   "message": "What is the price of Bitcoin?",
    "sessionId": "user-123",
-   "enableReasoning": true, // Enable chain-of-thought reasoning
-   "documentCount": 6 // Number of RAG documents to retrieve
+   "enableReasoning": true, // Enable chain-of-thought reasoning (Supernova model)
+   "documentCount": 6 // Number of RAG documents to retrieve (3 for Default, 6 for Supernova)
 }
 ```
 
@@ -82,13 +87,13 @@ Streaming chat query endpoint with real-time token-by-token responses.
 
 ```
 <status>Analyzing request...</status>
-<status>Checking knowledge base...</status>
+<status>Gathering context...</status>
 <status>Planning...</status>
-<thinking>I need to check the user's profile first...</thinking>
+<thinking>I need to check the current Bitcoin price...</thinking>
 <status>Executing plan...</status>
 <status>Calling get_stock_price...</status>
 <status>Finalizing answer...</status>
-<response><![CDATA[Based on your portfolio...]]></response>
+<response><![CDATA[The current price of Bitcoin (BTC) is $45,000...]]></response>
 ```
 
 **Features:**
@@ -97,6 +102,7 @@ Streaming chat query endpoint with real-time token-by-token responses.
 -  Chain-of-thought reasoning display (when `enableReasoning=true`)
 -  Status updates during processing
 -  Markdown-formatted responses
+-  Parallel context gathering for improved performance
 
 ---
 
@@ -104,9 +110,12 @@ Streaming chat query endpoint with real-time token-by-token responses.
 
 #### `GET /api/market/{symbol}`
 
-Get current market data for a specific symbol.
+Get current market data for a specific symbol. Supports both stocks and cryptocurrencies.
 
-**Example:** `GET /api/market/AAPL`
+**Examples:**
+
+-  `GET /api/market/AAPL` (stock)
+-  `GET /api/market/BTC` (crypto - automatically normalized to BTC-USD)
 
 **Response:**
 
@@ -122,6 +131,8 @@ Get current market data for a specific symbol.
 ]
 ```
 
+**Note:** The system uses a cache-first strategy with 15-minute TTL. Crypto symbols can be provided as simple symbols (e.g., "BTC", "ETH") and are automatically normalized to full format ("BTC-USD", "ETH-USD").
+
 #### `POST /api/market/batch`
 
 Get market data for multiple symbols.
@@ -129,10 +140,24 @@ Get market data for multiple symbols.
 **Request Body:**
 
 ```json
-["AAPL", "MSFT", "GOOGL"]
+["AAPL", "MSFT", "BTC", "ETH"]
 ```
 
 **Response:** Array of market data objects
+
+#### `POST /api/market/sync`
+
+Manually trigger market data sync for all active assets. Useful for testing and debugging.
+
+**Response:**
+
+```json
+{
+   "message": "Market data sync completed",
+   "syncedCount": 10,
+   "failedCount": 0
+}
+```
 
 ---
 
@@ -220,66 +245,49 @@ Get portfolio summary with holdings and performance chart.
 ### Chat Query Flow (Streaming)
 
 ```
-┌─────────────┐
-│   Frontend  │
-│  (Next.js)  │
-└──────┬──────┘
-       │ POST /api/chat/stream
-       │ { message, sessionId, enableReasoning, documentCount }
-       ▼
-┌─────────────────────────────────────┐
-│      ChatController                 │
-│  - Validates request                │
-│  - Sets up SSE stream               │
-└──────┬──────────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────────┐
-│   AgentOrchestrator                 │
-│  (IRagService implementation)       │
-└──────┬──────────────────────────────┘
-       │
-       ├─► 1. Gather Context (Parallel)
-       │   ├─► ContextService.GetChatHistoryAsync(sessionId, 6)
-       │   ├─► ContextService.GetSessionAsync(sessionId)
-       │   └─► ContextService.GetPortfolioAsync(sessionId)
-       │
-       ├─► 2. Proactive RAG Search
-       │   └─► SearchRagTool.ExecuteAsync(query, top_k)
-       │       ├─► EmbeddingService.EmbedAsync(query)
-       │       └─► Vector search in MongoDB
-       │
-       ├─► 3. Build Augmented Prompt
-       │   └─► PromptService.ConstructAugmentedUserPrompt()
-       │       ├─► System prompt (tool contracts, rules)
-       │       ├─► User profile context
-       │       ├─► Portfolio context
-       │       ├─► Market data context
-       │       ├─► RAG context
-       │       └─► Chat history (last 6 messages)
-       │
-       ├─► 4. LLM Planning (Streaming)
-       │   └─► LLMService.GenerateFinancialAdviceStreamAsync()
-       │       ├─► Calls Ollama API (streaming)
-       │       ├─► Yields <thinking> tokens (if enableReasoning=true)
-       │       └─► Yields <response> tokens (JSON plan)
-       │
-       ├─► 5. Parse Plan JSON
-       │   └─► PromptService.PostProcessModelOutput()
-       │       └─► Extract JSON from LLM output
-       │
-       ├─► 6. Execute Plan
-       │   └─► For each step in plan:
-       │       ├─► Find tool by name
-       │       ├─► Execute tool with args
-       │       └─► Collect tool outputs
-       │
-       └─► 7. Final Answer Generation (Streaming)
-           └─► LLMService.GenerateFinancialAdviceStreamAsync()
-               ├─► Build final prompt with tool results
-               ├─► Stream <thinking> tokens (if enabled)
-               └─► Stream <response> tokens (markdown text)
-                   └─► Wrapped in <![CDATA[]]> to preserve markdown
+User: "What is Bitcoin price?"
+  ↓
+Frontend (Next.js) → POST /api/chat/stream
+  ↓
+ChatController → AgentOrchestrator.ProcessQueryStreamAsync()
+  ↓
+1. Gather Context (Parallel):
+   ├─► Chat History (last 6 messages)
+   ├─► User Session (risk profile, goal)
+   └─► Portfolio (holdings, cash balance)
+  ↓
+2. Proactive RAG Search:
+   └─► SearchRagTool → Vector search in financial_documents
+  ↓
+3. Build Augmented Prompt:
+   ├─► System prompt (tool contracts, rules)
+   ├─► User profile + Portfolio + RAG context
+   ├─► Market context: "[]" (empty - LLM uses tools)
+   └─► Chat history
+  ↓
+4. LLM Planning Phase (Streaming):
+   └─► LLM generates Plan JSON:
+       {
+         "type": "plan",
+         "steps": [
+           { "tool": "get_stock_price", "args": { "symbol": "BTC" } }
+         ]
+       }
+   └─► Streams <thinking> tokens (if enabled)
+  ↓
+5. Execute Plan:
+   └─► GetStockPriceTool.ExecuteAsync("BTC")
+       └─► MarketDataService.GetMarketDataAsync(["BTC"])
+           ├─► Check market_cache (if < 15 min old) ✅
+           ├─► If miss: Fetch from Yahoo Finance API
+           ├─► Normalize: "BTC" → "BTC-USD"
+           └─► Update market_cache ✅
+  ↓
+6. Final Answer Generation (Streaming):
+   └─► LLM generates response with tool results
+       └─► Streams <response> tokens (markdown)
+  ↓
+Frontend displays: "The current price of Bitcoin (BTC) is $45,000..."
 ```
 
 ### Background Services
@@ -287,14 +295,22 @@ Get portfolio summary with holdings and performance chart.
 ```
 ┌─────────────────────────────┐
 │  NewsIngestionService       │
-│  (Background Service)       │
 │  Runs every 1 hour          │
 └──────┬──────────────────────┘
        │
-       ├─► Fetch news articles
+       ├─► Fetch financial news
        ├─► Generate embeddings
        └─► Store in MongoDB (financial_documents)
-           └─► Used by SearchRagTool for RAG retrieval
+
+┌─────────────────────────────┐
+│  MarketDataSyncService      │
+│  Runs every 15 minutes      │
+└──────┬──────────────────────┘
+       │
+       ├─► Get all active assets
+       ├─► Fetch market data
+       └─► Update market_cache
+           └─► Ensures cache is populated proactively
 ```
 
 ---
@@ -303,14 +319,19 @@ Get portfolio summary with holdings and performance chart.
 
 The system includes 6 tools that the LLM can call during planning:
 
-| Tool               | Description                     | Input                         | Output                                               |
-| ------------------ | ------------------------------- | ----------------------------- | ---------------------------------------------------- |
-| `get_stock_price`  | Get current stock price         | `{ symbol: "AAPL" }`          | `{ symbol, price, currency, timestamp, source }`     |
-| `get_profile`      | Get user profile and portfolio  | `{ user_id: "user-123" }`     | `{ user_id, strategy, cash, holdings }`              |
-| `get_owned_shares` | Get owned shares for a symbol   | `{ user_id: "user-123" }`     | `{ user_id, holdings: [{symbol, qty}] }`             |
-| `search_rag`       | Search financial news/documents | `{ query: "...", top_k: 3 }`  | `[{ id, title, snippet, timestamp, source, score }]` |
-| `buy_stock`        | Place buy order                 | `{ symbol: "AAPL", qty: 10 }` | `{ status, order_id, executed_qty, avg_price }`      |
-| `sell_stock`       | Place sell order                | `{ symbol: "AAPL", qty: 10 }` | `{ status, order_id, executed_qty, avg_price }`      |
+| Tool               | Description                     | Input                                       | Output                                               |
+| ------------------ | ------------------------------- | ------------------------------------------- | ---------------------------------------------------- |
+| `get_stock_price`  | Get current stock/crypto price  | `{ symbol: "AAPL" }` or `{ symbol: "BTC" }` | `{ symbol, price, currency, timestamp, source }`     |
+| `get_profile`      | Get user profile and portfolio  | `{ user_id: "user-123" }`                   | `{ user_id, strategy, cash, holdings }`              |
+| `get_owned_shares` | Get owned shares for a symbol   | `{ user_id: "user-123" }`                   | `{ user_id, holdings: [{symbol, qty}] }`             |
+| `search_rag`       | Search financial news/documents | `{ query: "...", top_k: 3 }`                | `[{ id, title, snippet, timestamp, source, score }]` |
+| `buy_stock`        | Place buy order                 | `{ symbol: "AAPL", qty: 10 }`               | `{ status, order_id, executed_qty, avg_price }`      |
+| `sell_stock`       | Place sell order                | `{ symbol: "AAPL", qty: 10 }`               | `{ status, order_id, executed_qty, avg_price }`      |
+
+**Symbol Format**:
+
+-  **Stocks**: Use ticker symbol (e.g., `"AAPL"`, `"MSFT"`)
+-  **Crypto**: Use simple symbol (e.g., `"BTC"`, `"ETH"`) - backend automatically normalizes to full format
 
 ---
 
@@ -383,17 +404,21 @@ This starts:
 
 -  **LLM Planning**: The LLM generates a JSON plan with tool calls
 -  **Tool Execution**: Tools are executed sequentially based on the plan
--  **Context Assembly**: Rich context from profile, portfolio, market data, and RAG
+-  **Context Assembly**: Rich context from profile, portfolio, RAG, and chat history
 -  **Streaming Responses**: Real-time token-by-token streaming with status updates
+-  **Cache-First Strategy**: Market data cached with 15-minute TTL for performance
 
 ### Key Features
 
 -  ✅ **Streaming Chat**: Real-time SSE streaming with chunk-by-chunk updates
--  ✅ **Chain-of-Thought**: Display LLM reasoning process (when enabled)
+-  ✅ **Chain-of-Thought**: Display LLM reasoning process (Supernova model)
 -  ✅ **RAG Integration**: Hourly news ingestion with vector search
 -  ✅ **Tool System**: Extensible tool-based architecture
 -  ✅ **Context Management**: Automatic context gathering and assembly
 -  ✅ **Parallel Processing**: Context gathering runs in parallel for performance
+-  ✅ **Market Data Caching**: 15-minute cache TTL with background sync
+-  ✅ **Symbol Normalization**: Automatic conversion (BTC → BTC-USD) for API calls
+-  ✅ **Optimized Prompts**: Shorter prompts using simple symbols for faster processing
 
 ---
 
@@ -405,7 +430,7 @@ ConnectionStrings__MongoDB=mongodb://localhost:27017/financial_advisor
 
 # Ollama
 OLLAMA_ENDPOINT=http://localhost:11434
-OLLAMA_MODEL=deepseek-r1:8b # faster fr MVP
+OLLAMA_MODEL=deepseek-r1:14b
 
 # Embeddings (if using external service)
 EMBEDDING_SERVICE_URL=http://localhost:8000
@@ -430,9 +455,12 @@ dotnet test
 
 ## 📚 Additional Documentation
 
--  `ARCHITECTURE_ANALYSIS_AND_IMPLEMENTATION_PLAN.md` - Detailed architecture analysis
--  `docs/API_SPECIFICATION.md` - API documentation
--  `docs/SETUP.md` - Detailed setup instructions
+-  [`FinancialAdvisor.Backend/docs/ARCHITECTURE.md`](FinancialAdvisor.Backend/docs/ARCHITECTURE.md) - Comprehensive architecture documentation
+-  [`ARCHITECTURE_FLOW_DIAGRAM.md`](ARCHITECTURE_FLOW_DIAGRAM.md) - Detailed data flow diagrams
+-  [`SYSTEM_ARCHITECTURE_EXPLANATION.md`](SYSTEM_ARCHITECTURE_EXPLANATION.md) - In-depth system explanation
+-  `FinancialAdvisor.Backend/docs/API_SPECIFICATION.md` - API documentation
+-  `FinancialAdvisor.Backend/docs/SETUP.md` - Detailed setup instructions
+-  `FinancialAdvisor.Backend/docs/DEPLOYMENT.md` - Deployment guide
 
 ---
 
