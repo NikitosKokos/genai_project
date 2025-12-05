@@ -37,6 +37,7 @@ builder.Services.AddSingleton<OpenAiEmbeddingsClient>();
 builder.Services.AddScoped<IContextService, ContextService>();
 builder.Services.AddScoped<IPromptService, PromptService>();
 builder.Services.AddScoped<IMarketDataService, MarketDataService>();
+builder.Services.AddHttpClient<IMarketDataService, MarketDataService>();
 builder.Services.AddScoped<ILLMService, LLMService>();
 builder.Services.AddHttpClient<ILLMService, LLMService>();
 builder.Services.AddHttpClient<IEmbeddingService, EmbeddingService>();
@@ -44,6 +45,7 @@ builder.Services.AddScoped<IActionService, ActionService>();
 
 // Background Services
 builder.Services.AddHostedService<NewsIngestionService>();
+builder.Services.AddHostedService<MarketDataSyncService>();
 
 // 3. Tools
 builder.Services.AddScoped<ITool, GetStockPriceTool>();
