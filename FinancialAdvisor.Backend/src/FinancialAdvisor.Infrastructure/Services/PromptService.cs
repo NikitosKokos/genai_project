@@ -61,16 +61,18 @@ Plan JSON format:
     { ""action"": ""call_tool"", ""tool"": ""get_profile"", ""args"": {""user_id"":""u123""}, ""why"":""get user holdings"" },
     { ""action"": ""call_tool"", ""tool"": ""get_stock_price"", ""args"": {""symbol"":""AAPL""}, ""why"":""need latest price"" }
   ],
-  ""final_prompt"": ""## final prompt to produce user message\nUse the following context: {profile}, {prices}, {rag_snippets}. Produce a short answer... IMPORTANT: Do NOT return JSON. Return clear, concise Markdown text.""
+  ""final_prompt"": ""## final prompt to produce user message\nUse the following context: {profile}, {prices}, {rag_snippets}. Produce a clear, conversational answer in plain text. DO NOT use JSON. Write naturally as if speaking to the user. Include citations and disclaimers naturally in the text.""
 }
 
-FinalAnswer format:
+FinalAnswer format (ONLY for direct answers without tool calls):
 {
   ""type"":""final_answer"",
   ""answer_plain"":""1-3 sentence plain summary"",
   ""answer_verbose"":""detailed reasoning with citations and assumptions"",
   ""disclaimer"":""I am not a licensed financial advisor...""
 }
+
+IMPORTANT: When generating the FINAL user-facing message (after tools are executed or for direct answers), you MUST return plain conversational text, NOT JSON. JSON format is ONLY for the planning step. The final message should be natural, readable text that flows like a conversation.
 ";
         }
 

@@ -67,7 +67,7 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
         public async IAsyncEnumerable<string> ProcessQueryStreamAsync(string userQuery, string sessionId, [EnumeratorCancellation] System.Threading.CancellationToken cancellationToken = default, bool enableReasoning = false, int documentCount = 3)
         {
             _logger.LogInformation($"[{sessionId}] Processing Agent Query: {userQuery}");
-            yield return "STATUS: Analyzing request...\n";
+            yield return "<status>Analyzing request...</status>";
 
             // 1. Gather Initial Context
             var history = await _contextService.GetChatHistoryAsync(sessionId, 6);
@@ -79,7 +79,7 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             string ragContext = "";
             if (ragTool != null)
             {
-                yield return "STATUS: Checking knowledge base...\n";
+                yield return "<status>Checking knowledge base...</status>";
                 var ragResultJson = await ragTool.ExecuteAsync(JsonSerializer.Serialize(new { query = userQuery, top_k = 3 }));
                 ragContext = ragResultJson;
             }
@@ -96,7 +96,7 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
                 session, 
                 history);
 
-            yield return "STATUS: Planning...\n";
+            yield return "<status>Planning...</status>";
 
             // 4. Call LLM (Plan)
             var llmResponse = await _llmService.GenerateFinancialAdviceAsync(userQuery, fullPrompt, sessionId);
@@ -131,7 +131,7 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             if (isPlan)
             {
                 // EXECUTE PLAN
-                yield return "STATUS: Executing plan...\n";
+                yield return "<status>Executing plan...</status>";
                 
                 var steps = root.GetProperty("steps");
                 var toolOutputs = new List<string>();
@@ -145,7 +145,7 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
                     var argsJson = args.ToString();
                     var why = step.TryGetProperty("why", out var whyProp) ? whyProp.GetString() : "";
 
-                    yield return $"STATUS: Calling {toolName}...\n";
+                    yield return $"<status>Calling {toolName}...</status>";
                     _logger.LogInformation($"[{sessionId}] Tool Call: {toolName} | Reason: {why}");
 
                     var tool = _tools.FirstOrDefault(t => t.Name == toolName);
@@ -161,84 +161,153 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
                 }
 
                 // 6. Final Generation
-                yield return "STATUS: Finalizing answer...\n";
+                yield return "<status>Finalizing answer...</status>";
                 var finalPromptInstruction = root.GetProperty("final_prompt").GetString();
                 var toolContext = string.Join("\n\n", toolOutputs);
                 
+                // Build a clear prompt that emphasizes plain text output
+                // The LLMService will format this as: context + "\n\nUser Query: " + userQuery + "\n\nResponse:"
+                var systemReminder = @"CRITICAL INSTRUCTION: You are generating the FINAL message that the user will see. 
+- DO NOT use JSON format. 
+- DO NOT use curly braces { } or quotes around your answer.
+- Write in plain, natural conversational text.
+- Start writing immediately without any formatting markers.
+- Write as if you are speaking directly to the user in a friendly, professional manner.
+- Include citations naturally in the text (e.g., 'According to recent news from TechCrunch...').
+- Include the disclaimer naturally at the end (e.g., 'Please note: I am not a licensed financial advisor; this is informational only.').";
+                
+                var combinedContext = $@"{systemReminder}
+
+Tool Results:
+{toolContext}";
+                
+                var userQueryForFinal = $@"{finalPromptInstruction}
+
+Begin your response now in plain text:";
+                
                 // Stream the final answer token by token
                 string finalResponseClean = "";
-                await foreach (var token in _llmService.GenerateFinancialAdviceStreamAsync(finalPromptInstruction, toolContext, sessionId, cancellationToken))
+                string streamBuffer = ""; // Buffer to detect JSON in stream
+                
+                await foreach (var token in _llmService.GenerateFinancialAdviceStreamAsync(userQueryForFinal, combinedContext, sessionId, cancellationToken, enableReasoning))
                 {
-                    finalResponseClean += token;
+                    // Forward all tokens (thinking, response) as-is - they're already in XML format
                     yield return token;
+                    
+                    // Extract response content for history (skip thinking and XML tags)
+                    if (token.StartsWith("<response>"))
+                    {
+                        // Handle both CDATA and regular content
+                        string content;
+                        if (token.Contains("<![CDATA["))
+                        {
+                            // Extract from CDATA section
+                            var cdataStart = token.IndexOf("<![CDATA[") + 9;
+                            var cdataEnd = token.IndexOf("]]>", cdataStart);
+                            if (cdataEnd > cdataStart)
+                            {
+                                content = token.Substring(cdataStart, cdataEnd - cdataStart);
+                                // Restore any ]]> that were escaped
+                                content = content.Replace("]]]]><![CDATA[>", "]]>");
+                            }
+                            else
+                            {
+                                // Incomplete CDATA, skip for now
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            // Regular content (no CDATA)
+                            var endTag = token.IndexOf("</response>");
+                            if (endTag > 9)
+                            {
+                                content = token.Substring(9, endTag - 9);
+                                // Unescape XML entities if any
+                                content = content.Replace("&amp;", "&").Replace("&lt;", "<").Replace("&gt;", ">");
+                            }
+                            else
+                            {
+                                continue;
+                            }
+                        }
+                        
+                        finalResponseClean += content;
+                        streamBuffer += content;
+                    }
+                    else if (!token.StartsWith("<thinking>") && !token.StartsWith("<status>"))
+                    {
+                        // Fallback: if it's not a tag, treat as response content (for backward compatibility)
+                        finalResponseClean += token;
+                        streamBuffer += token;
+                    }
                 }
                 
-                // Post-process logic (saving to history) remains, but we use the accumulated response
-                // ... existing parsing logic for answer_verbose/answer_plain if needed ...
-                // Since we are streaming raw tokens now, we might just save the full text.
-                // Or if the model outputs JSON, we stream the JSON raw.
-                
-                // For history saving, we use finalResponseClean
-                
-                // Parse Final Answer to extract just the verbose text if it was JSON
-                // (This is tricky if we streamed it raw to the user. If we streamed JSON to user, user sees JSON.
-                // If we want user to see text, we must parse it. But parsing requires full text.
-                // Best practice: Ask LLM for TEXT in the final prompt, not JSON, OR filter JSON on the fly.)
-                
-                // Given the current prompt asks for JSON "FinalAnswer format", the stream will be JSON.
-                // The user probably wants to see the "answer_verbose" content streamed.
-                // This is hard to stream token-by-token if it's wrapped in JSON.
-                
-                // ADJUSTMENT: We will parse the final result for history, but for streaming to user, 
-                // if it's JSON, it looks bad.
-                // Recommendation: Change the final step to ask for Markdown/Text, NOT JSON.
-                // The "Plan" step handles the structured logic. The "Final" step is for the user.
-                
+                // Post-process: If the response is JSON, extract the text for history
+                // (We already streamed it to the user, but for history we want clean text)
                 await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "user", Content = userQuery });
-                // We try to clean it up for history if it was JSON
+                
                 string historyContent = finalResponseClean;
                 try 
                 {
-                    using var finalDoc = JsonDocument.Parse(finalResponseClean);
-                    if (finalDoc.RootElement.TryGetProperty("answer_verbose", out var v))
+                    // Try to parse as JSON and extract text content
+                    using var finalDoc = JsonDocument.Parse(finalResponseClean.Trim());
+                    if (finalDoc.RootElement.TryGetProperty("answer_verbose", out var v) && !string.IsNullOrWhiteSpace(v.GetString()))
                     {
                         historyContent = v.GetString();
                     }
-                    else if (finalDoc.RootElement.TryGetProperty("answer_plain", out var p))
+                    else if (finalDoc.RootElement.TryGetProperty("answer_plain", out var p) && !string.IsNullOrWhiteSpace(p.GetString()))
                     {
                         historyContent = p.GetString();
                     }
                 }
-                catch { }
+                catch 
+                {
+                    // Not JSON, use as-is
+                }
                 
                 await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "assistant", Content = historyContent });
             }
             else 
             {
-                // Direct Answer (FinalAnswer or fallback)
-                // If the first pass wasn't a plan, it was a direct answer (likely JSON FinalAnswer).
-                // We can't easily stream a JSON object's specific field without a parser that handles partial JSON.
-                // For now, we yield the already generated text (block).
-                // To support streaming direct answers, we would need to stream the FIRST call too,
-                // but we need to parse it to see if it's a PLAN or ANSWER.
-                // Streaming + Logic Branching = Complicated.
-                // Current "Best Effort": Stream the tools part, then block-return the final answer if it was a plan.
-                // OR: Since we are here, we already have the full response `processedResponse`.
-                yield return processedResponse; 
+                // Direct Answer (FinalAnswer JSON or plain text)
+                // Extract text from JSON if it's a FinalAnswer, otherwise stream as-is
+                string answerToStream = processedResponse;
                 
-                // ... history saving ...
-                string answer = processedResponse;
-                if (root.ValueKind != JsonValueKind.Undefined && root.TryGetProperty("answer_verbose", out var v))
+                if (root.ValueKind != JsonValueKind.Undefined)
                 {
-                    answer = v.GetString();
+                    // Try to extract answer_verbose or answer_plain from JSON
+                    if (root.TryGetProperty("answer_verbose", out var v) && !string.IsNullOrWhiteSpace(v.GetString()))
+                    {
+                        answerToStream = v.GetString();
+                    }
+                    else if (root.TryGetProperty("answer_plain", out var p) && !string.IsNullOrWhiteSpace(p.GetString()))
+                    {
+                        answerToStream = p.GetString();
+                    }
                 }
-                else if (root.ValueKind != JsonValueKind.Undefined && root.TryGetProperty("answer_plain", out var p))
+                
+                // Stream the answer character by character to simulate token streaming
+                // This provides a better UX than dumping it all at once
+                yield return "<status>Finalizing answer...</status>";
+                
+                // Stream in chunks to simulate natural token-by-token streaming
+                // Use CDATA to preserve markdown syntax
+                const int chunkSize = 10; // Characters per chunk for smooth streaming effect
+                for (int i = 0; i < answerToStream.Length; i += chunkSize)
                 {
-                    answer = p.GetString();
+                    if (cancellationToken.IsCancellationRequested) yield break;
+                    int length = Math.Min(chunkSize, answerToStream.Length - i);
+                    var chunk = answerToStream.Substring(i, length);
+                    // Use CDATA to preserve markdown - replace ]]> if it appears
+                    var safeChunk = chunk.Replace("]]>", "]]]]><![CDATA[>");
+                    yield return $"<response><![CDATA[{safeChunk}]]></response>";
+                    await Task.Delay(10, cancellationToken); // Small delay for smooth streaming effect
                 }
 
+                // Save to history
                 await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "user", Content = userQuery });
-                await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "assistant", Content = answer });
+                await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "assistant", Content = answerToStream });
             }
 
             if (doc != null) doc.Dispose();

@@ -93,6 +93,7 @@ namespace FinancialAdvisor.Infrastructure.Services
 
             string? line;
             var accumulatedText = "";
+            var accumulatedThinking = ""; // Buffer for thinking tokens
 
             while ((line = await reader.ReadLineAsync()) != null)
             {
@@ -112,18 +113,32 @@ namespace FinancialAdvisor.Infrastructure.Services
                 if (chunk != null)
                 {
                     // Handle Thinking field if enabled
+                    // DeepSeek-R1 outputs thinking separately from response when think=true
+                    // Buffer thinking tokens and emit when we have meaningful content (sentence or newline)
                     if (enableReasoning && !string.IsNullOrEmpty(chunk.Thinking))
                     {
-                         // Wrap thinking in tags if you want to display it clearly on frontend, or just stream it raw
-                         // For now, let's yield it as a special block or just raw text. 
-                         // Given the user wants to see it, we can yield it. 
-                         // To distinguish it from normal response, we might want to wrap it or just let it flow.
-                         // DeepSeek models usually separate them cleanly.
-                         // Let's wrap it in <think> tags for the frontend to parse if desired, or just stream it.
-                         yield return $"<think>{chunk.Thinking}</think>";
+                        accumulatedThinking += chunk.Thinking;
+                        
+                        // Emit thinking when we have a complete thought (ends with punctuation + space, or newline)
+                        // This reduces the number of small chunks sent to frontend
+                        if (accumulatedThinking.EndsWith("\n") || 
+                            accumulatedThinking.EndsWith(". ") || 
+                            accumulatedThinking.EndsWith("? ") || 
+                            accumulatedThinking.EndsWith("! ") ||
+                            accumulatedThinking.Length > 100) // Or if buffer gets large
+                        {
+                            // Escape XML special characters in thinking content
+                            var escapedThinking = accumulatedThinking
+                                .Replace("&", "&amp;")
+                                .Replace("<", "&lt;")
+                                .Replace(">", "&gt;");
+                            
+                            yield return $"<thinking>{escapedThinking}</thinking>";
+                            accumulatedThinking = "";
+                        }
                     }
 
-                    // Handle Response field
+                    // Handle Response field - use CDATA to preserve markdown syntax
                     if (!string.IsNullOrEmpty(chunk.Response))
                     {
                         var text = chunk.Response;
@@ -138,21 +153,40 @@ namespace FinancialAdvisor.Infrastructure.Services
                         }
                         
                         // Hybrid logic to handle both Delta and Accumulated streaming from Ollama
+                        string delta;
                         if (accumulatedText.Length > 0 && text.StartsWith(accumulatedText))
                         {
                             // It's an accumulated chunk
-                            var delta = text.Substring(accumulatedText.Length);
+                            delta = text.Substring(accumulatedText.Length);
                             accumulatedText = text;
-                            yield return delta;
                         }
                         else
                         {
                             // It's a standard delta chunk
+                            delta = text;
                             accumulatedText += text;
-                            yield return text;
+                        }
+                        
+                        // Use CDATA to preserve markdown syntax (**, <code>, etc.)
+                        // CDATA allows markdown to pass through without escaping
+                        if (!string.IsNullOrEmpty(delta))
+                        {
+                            // Replace ]]> with ]]]]><![CDATA[> to handle CDATA end markers in content
+                            var safeDelta = delta.Replace("]]>", "]]]]><![CDATA[>");
+                            yield return $"<response><![CDATA[{safeDelta}]]></response>";
                         }
                     }
                 }
+            }
+            
+            // Emit any remaining thinking buffer at the end
+            if (enableReasoning && !string.IsNullOrEmpty(accumulatedThinking))
+            {
+                var escapedThinking = accumulatedThinking
+                    .Replace("&", "&amp;")
+                    .Replace("<", "&lt;")
+                    .Replace(">", "&gt;");
+                yield return $"<thinking>{escapedThinking}</thinking>";
             }
         }
 
