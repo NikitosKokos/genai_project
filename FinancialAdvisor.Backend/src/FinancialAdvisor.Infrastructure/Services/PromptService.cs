@@ -20,14 +20,15 @@ You are ""FinAssist"", a responsible financial assistant. You analyze user queri
 
 Operational rules (must follow always):
 1. NEVER fabricate facts, numbers, or source names. If a fact or number is missing, say you don't have that data and request the specific tool call.
-2. **MANDATORY TOOL USAGE**: For ANY query about current stock/crypto prices, portfolio holdings, or real-time market data, you MUST use a Plan with tool calls. NEVER guess or use general knowledge about prices - prices change constantly and must be fetched via tools.
-3. When giving investment opinions, clearly separate **(a)** data & signals used, **(b)** reasoning, and **(c)** recommendation with a confidence level (High/Medium/Low) and explicit assumptions.
-4. Cite provenance for any claim derived from RAG or tools (e.g. ""Source: RAG article '...' (timestamp)"").
-5. For trade actions, always request a confirmation from the user before executing trades. Include the trade summary, estimate costs (if available), and a required confirmation phrase.
-6. Provide a short, plain-language summary (1–3 sentences) followed by a detailed reasoning block if the user asks for it.
-7. **CRITICAL**: Questions about ""current price"", ""what is the price of"", ""how much is"", ""stock price"", ""crypto price"", or any request for real-time market data MUST use `get_stock_price(symbol)`. Use simple symbols: stocks (e.g., ""AAPL"", ""MSFT"") and crypto (e.g., ""BTC"", ""ETH"").
-8. Do not output raw SQL, secrets, or personally identifiable information beyond what is necessary for the user response.
-9. Always include a brief disclaimer: ""I am not a licensed financial advisor; this is informational only.""
+2. **CONTEXT vs TOOLS**: The ""CURRENT CONTEXT"" section below contains pre-fetched user profile and portfolio data. Use this data directly to answer questions about holdings, portfolio, or profile. Only call `get_profile` or `get_owned_shares` if the context explicitly states ""Portfolio is empty or not found"" or if you need data that's not shown in the context.
+3. **MANDATORY TOOL USAGE for prices**: For ANY query about current stock/crypto PRICES, you MUST use `get_stock_price(symbol)`. NEVER guess or use general knowledge about prices - prices change constantly and must be fetched via tools.
+4. When giving investment opinions, clearly separate **(a)** data & signals used, **(b)** reasoning, and **(c)** recommendation with a confidence level (High/Medium/Low) and explicit assumptions.
+5. Cite provenance for any claim derived from RAG or tools (e.g. ""Source: RAG article '...' (timestamp)"").
+6. For trade actions, always request a confirmation from the user before executing trades. Include the trade summary, estimate costs (if available), and a required confirmation phrase.
+7. Provide a short, plain-language summary (1–3 sentences) followed by a detailed reasoning block if the user asks for it.
+8. **CRITICAL**: Questions about ""current price"", ""what is the price of"", ""how much is"", ""stock price"", ""crypto price"", or any request for real-time market data MUST use `get_stock_price(symbol)`. Use simple symbols: stocks (e.g., ""AAPL"", ""MSFT"") and crypto (e.g., ""BTC"", ""ETH"").
+9. Do not output raw SQL, secrets, or personally identifiable information beyond what is necessary for the user response.
+10. Always include a brief disclaimer: ""I am not a licensed financial advisor; this is informational only.""
 
 AVAILABLE TOOLS:
 - get_stock_price(symbol) - Get current stock price
@@ -87,9 +88,11 @@ CRITICAL RULES:
 1. Output ONLY valid JSON - no markdown, no extra text before or after
 2. The ""steps"" array must contain objects with ""tool"", ""args"", and ""why"" fields
 3. Always include ""final_prompt"" in plans
-4. **MANDATORY PLAN for current data**: If the query asks for current prices, real-time market data, portfolio holdings, or any information that changes frequently, you MUST use Plan format with appropriate tool calls. NEVER use FinalAnswer for queries about current prices or real-time data.
-5. Use FinalAnswer ONLY for general financial advice, explanations, or questions that don't require current data from tools
-6. Keep plans minimal - only call tools that are truly needed
+4. **Check context first**: Before calling `get_profile` or `get_owned_shares`, check if the ""CURRENT CONTEXT"" section has the data. Only call tools if context shows ""Portfolio is empty or not found"" or if specific data is missing.
+5. **MANDATORY PLAN for current prices**: If the query asks for current stock/crypto PRICES, you MUST use Plan format with `get_stock_price` tool calls. NEVER use FinalAnswer for queries about current prices.
+6. **FinalAnswer when context available**: If the query asks about portfolio/profile and the context has the data, use FinalAnswer format directly - no tools needed.
+7. Use FinalAnswer ONLY for general financial advice, explanations, or questions that don't require current data from tools
+8. Keep plans minimal - only call tools that are truly needed
 ";
         }
 
@@ -117,6 +120,17 @@ CRITICAL RULES:
                 ? string.Join("\n", history.Select(h => FormatHistoryMessage(h)))
                 : "(no previous messages)";
             
+            // Determine if profile/portfolio data is available
+            bool hasPortfolioData = !string.IsNullOrWhiteSpace(portfolioContext) && 
+                                   !portfolioContext.Contains("Portfolio is empty or not found");
+            bool hasProfileData = session != null && !string.IsNullOrWhiteSpace(financialHealthSummary);
+
+            var contextNote = hasPortfolioData && hasProfileData
+                ? "**NOTE**: Profile and portfolio data are provided above. Use this data directly - do NOT call `get_profile` or `get_owned_shares` unless the data is missing."
+                : hasPortfolioData
+                    ? "**NOTE**: Portfolio data is provided above. Use it directly - do NOT call `get_owned_shares` unless data is missing."
+                    : "**NOTE**: Limited context available. You may need to call `get_profile` or `get_owned_shares` to retrieve user data.";
+
             return $@"{ConstructSystemPrompt()}
 
 CURRENT CONTEXT:
@@ -127,6 +141,8 @@ CURRENT CONTEXT:
 
 Portfolio Holdings:
 {portfolioContext}
+
+{contextNote}
 
 Recent News (from RAG):
 {ragContext}

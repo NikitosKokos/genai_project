@@ -70,6 +70,8 @@ namespace FinancialAdvisor.Api.Controllers
             // Default to 3 if not specified or invalid
             int docCount = request.DocumentCount > 0 ? request.DocumentCount : 3;
             var sessionId = request.SessionId ?? "default_session";
+            
+            _logger.LogInformation($"[ChatController] StreamQuery received - SessionId: '{sessionId}', Message: '{request.Message?.Substring(0, Math.Min(50, request.Message?.Length ?? 0))}'");
 
             try
             {

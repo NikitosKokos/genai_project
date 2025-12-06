@@ -2,9 +2,9 @@ namespace FinancialAdvisor.Application.Services;
 
 public class PortfolioService
 {
-    public Task<object> GetPortfolioAsync(int userId)
+    public Task<object> GetPortfolioAsync(string sessionId)
     {
-        return Task.FromResult<object>(new { userId });
+        return Task.FromResult<object>(new { sessionId });
     }
 }
 

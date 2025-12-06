@@ -136,6 +136,7 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             yield return "<status>Analyzing request...</status>";
 
             // 1. Gather Initial Context (Parallel for better performance)
+            _logger.LogInformation($"[{sessionId}] Fetching context: history, session, portfolio");
             var historyTask = _contextService.GetChatHistoryAsync(sessionId, 6);
             var sessionTask = _contextService.GetSessionAsync(sessionId);
             var portfolioTask = _contextService.GetPortfolioAsync(sessionId);
@@ -145,6 +146,18 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             var history = historyTask.Result;
             var session = sessionTask.Result;
             var portfolio = portfolioTask.Result;
+            
+            // Log portfolio retrieval for debugging
+            if (portfolio == null)
+            {
+                _logger.LogWarning($"[{sessionId}] No portfolio found in database for sessionId: '{sessionId}'");
+            }
+            else
+            {
+                var holdingsCount = portfolio.Holdings?.Count ?? 0;
+                _logger.LogInformation($"[{sessionId}] Portfolio retrieved: {holdingsCount} holdings, TotalValue: {portfolio.TotalValue}, CashBalance: {portfolio.CashBalance}");
+            }
+            
             // Build health summary from already-fetched data (avoids redundant DB calls)
             var healthSummary = _contextService.BuildFinancialHealthSummary(session, portfolio);
 

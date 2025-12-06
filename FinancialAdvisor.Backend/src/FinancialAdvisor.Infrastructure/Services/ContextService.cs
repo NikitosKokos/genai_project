@@ -3,6 +3,7 @@ using FinancialAdvisor.Application.Models;
 using FinancialAdvisor.Infrastructure.Data;
 using MongoDB.Bson;
 using MongoDB.Driver;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -13,10 +14,12 @@ namespace FinancialAdvisor.Infrastructure.Services
     public class ContextService : IContextService
     {
         private readonly MongoDbContext _mongoContext;
+        private readonly ILogger<ContextService> _logger;
 
-        public ContextService(MongoDbContext mongoContext)
+        public ContextService(MongoDbContext mongoContext, ILogger<ContextService> logger)
         {
             _mongoContext = mongoContext;
+            _logger = logger;
         }
 
         public async Task<Session> GetSessionAsync(string sessionId)
@@ -60,25 +63,70 @@ namespace FinancialAdvisor.Infrastructure.Services
 
         public async Task<PortfolioSnapshot> GetPortfolioAsync(string sessionId)
         {
-            return await _mongoContext.PortfolioSnapshots
-                .Find(p => p.SessionId == sessionId)
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                throw new ArgumentException("SessionId cannot be null or empty", nameof(sessionId));
+            }
+
+            // Use explicit filter builder to ensure correct field mapping (session_id in MongoDB)
+            var filter = Builders<PortfolioSnapshot>.Filter.Eq("session_id", sessionId);
+            
+            _logger.LogInformation($"[ContextService] Querying portfolio for sessionId: '{sessionId}'");
+            
+            var portfolio = await _mongoContext.PortfolioSnapshots
+                .Find(filter)
                 .SortByDescending(p => p.CreatedAt)
                 .FirstOrDefaultAsync();
+
+            // Log for debugging
+            if (portfolio == null)
+            {
+                _logger.LogWarning($"[ContextService] No portfolio found for sessionId: '{sessionId}'. Check if MongoDB has portfolio data for this session.");
+                
+                // Try to verify the database connection and collection
+                var count = await _mongoContext.PortfolioSnapshots.CountDocumentsAsync(FilterDefinition<PortfolioSnapshot>.Empty);
+                _logger.LogInformation($"[ContextService] Total portfolios in collection: {count}");
+            }
+            else
+            {
+                var holdingsCount = portfolio.Holdings?.Count ?? 0;
+                _logger.LogInformation($"[ContextService] Portfolio found for sessionId: '{sessionId}' - Holdings: {holdingsCount}, TotalValue: {portfolio.TotalValue}, CashBalance: {portfolio.CashBalance}");
+                
+                if (holdingsCount > 0 && portfolio.Holdings != null)
+                {
+                    var symbols = string.Join(", ", portfolio.Holdings.Select(h => h.Symbol));
+                    _logger.LogInformation($"[ContextService] Portfolio holdings: {symbols}");
+                }
+            }
+
+            return portfolio;
         }
 
         public string FormatPortfolioContext(PortfolioSnapshot portfolio)
         {
-            if (portfolio?.Holdings == null || !portfolio.Holdings.Any())
-                return "Portfolio is empty.";
+            if (portfolio == null)
+            {
+                _logger.LogWarning("[ContextService] FormatPortfolioContext: portfolio is null");
+                return "Portfolio is empty or not found.";
+            }
+
+            if (portfolio.Holdings == null || !portfolio.Holdings.Any())
+            {
+                _logger.LogWarning($"[ContextService] FormatPortfolioContext: portfolio exists but holdings is null or empty. TotalValue: {portfolio.TotalValue}, CashBalance: {portfolio.CashBalance}");
+                return $"Portfolio is empty. Cash Balance: ${portfolio.CashBalance:N2}";
+            }
 
             var holdings = portfolio.Holdings
-                .Select(h => $"- {h.Symbol}: {h.Quantity} shares @ ${h.CurrentPrice} avg cost: ${h.AvgCost}")
+                .Select(h => $"- {h.Symbol}: {h.Quantity} shares @ ${h.CurrentPrice:N2} (avg cost: ${h.AvgCost:N2})")
                 .ToList();
 
-            return $@"Current Portfolio:
+            var result = $@"Current Portfolio:
 {string.Join("\n", holdings)}
-Total Value: ${portfolio.TotalValue}
-Cash Balance: ${portfolio.CashBalance}";
+Total Value: ${portfolio.TotalValue:N2}
+Cash Balance: ${portfolio.CashBalance:N2}";
+
+            _logger.LogInformation($"[ContextService] FormatPortfolioContext: Formatted portfolio with {holdings.Count} holdings");
+            return result;
         }
 
         public async Task AddChatMessageAsync(string sessionId, ChatMessage message)
@@ -114,6 +162,7 @@ Cash Balance: ${portfolio.CashBalance}";
         {
             if (portfolio == null)
             {
+                _logger.LogWarning($"[ContextService] BuildFinancialHealthSummary: portfolio is null for sessionId: {session?.SessionId ?? "unknown"}");
                 return $"User Profile: {session?.PortfolioContext?.RiskProfile ?? "Unknown"} risk profile. Goal: {session?.PortfolioContext?.InvestmentGoal ?? "Not set"}. Portfolio is currently empty or not linked.";
             }
 
@@ -124,6 +173,11 @@ Cash Balance: ${portfolio.CashBalance}";
             
             var holdingsCount = portfolio.Holdings?.Count ?? 0;
             var topHolding = portfolio.Holdings?.OrderByDescending(h => h.Quantity * h.CurrentPrice).FirstOrDefault();
+            
+            if (holdingsCount == 0)
+            {
+                _logger.LogWarning($"[ContextService] BuildFinancialHealthSummary: portfolio exists but has 0 holdings. TotalValue: {totalValue}, CashBalance: {cash}");
+            }
             
             return $@"Financial Health Summary:
 - Total Assets: ${totalValue:N0}

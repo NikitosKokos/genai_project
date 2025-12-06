@@ -48,7 +48,7 @@ namespace FinancialAdvisor.UnitTests.Services
         {
             // Arrange
             var query = "What is AAPL price?";
-            var sessionId = "test-session";
+            var sessionId = "demo_session_001";
 
             // 1. Context Mocks
             _mockContextService.Setup(s => s.GetChatHistoryAsync(sessionId, 6))
