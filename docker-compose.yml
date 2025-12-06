@@ -86,13 +86,13 @@ services:
       networks:
          - fin-advisor-network
       # Add GPU support for LLM processing for windows users
-      deploy:
-         resources:
-            reservations:
-               devices:
-                  - driver: nvidia
-                    count: 1
-                    capabilities: [gpu]
+      # deploy:
+      #    resources:
+      #       reservations:
+      #          devices:
+      #             - driver: nvidia
+      #               count: 1
+      #               capabilities: [gpu]
 
 volumes:
    mongodb_data:
