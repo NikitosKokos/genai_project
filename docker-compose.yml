@@ -55,7 +55,7 @@ services:
          - DEEPSEEK_REASONING_MODEL=deepseek-reasoner
          # Ollama fallback (used if DEEPSEEK_API_KEY is not set)
          - OLLAMA_ENDPOINT=http://ollama:11434
-         - OLLAMA_MODEL=llama3.1:8b
+         - OLLAMA_MODEL=deepseek-r1:8b
       depends_on:
          mongodb:
             condition: service_healthy
@@ -85,13 +85,14 @@ services:
          - ollama_models:/root/.ollama
       networks:
          - fin-advisor-network
-      # deploy:
-      #    resources:
-      #       reservations:
-      #          devices:
-      #             - driver: nvidia
-      #               count: 1
-      #               capabilities: [gpu]
+      # Add GPU support for LLM processing for windows users
+      deploy:
+         resources:
+            reservations:
+               devices:
+                  - driver: nvidia
+                    count: 1
+                    capabilities: [gpu]
 
 volumes:
    mongodb_data:

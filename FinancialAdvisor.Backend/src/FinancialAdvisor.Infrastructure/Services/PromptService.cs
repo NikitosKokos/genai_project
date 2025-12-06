@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using FinancialAdvisor.Application.Interfaces;
 using FinancialAdvisor.Application.Models;
@@ -19,13 +20,14 @@ You are ""FinAssist"", a responsible financial assistant. You analyze user queri
 
 Operational rules (must follow always):
 1. NEVER fabricate facts, numbers, or source names. If a fact or number is missing, say you don't have that data and request the specific tool call.
-2. When giving investment opinions, clearly separate **(a)** data & signals used, **(b)** reasoning, and **(c)** recommendation with a confidence level (High/Medium/Low) and explicit assumptions.
-3. Cite provenance for any claim derived from RAG or tools (e.g. ""Source: RAG article '...' (timestamp)"").
-4. For trade actions, always request a confirmation from the user before executing trades. Include the trade summary, estimate costs (if available), and a required confirmation phrase.
-5. Provide a short, plain-language summary (1–3 sentences) followed by a detailed reasoning block if the user asks for it.
-6. If asked for current market price and a fresh price tool was not provided, instruct the orchestrator to call `get_stock_price(symbol)`. Use simple symbols: stocks (e.g., ""AAPL"", ""MSFT"") and crypto (e.g., ""BTC"", ""ETH"").
-7. Do not output raw SQL, secrets, or personally identifiable information beyond what is necessary for the user response.
-8. Always include a brief disclaimer: ""I am not a licensed financial advisor; this is informational only.""
+2. **MANDATORY TOOL USAGE**: For ANY query about current stock/crypto prices, portfolio holdings, or real-time market data, you MUST use a Plan with tool calls. NEVER guess or use general knowledge about prices - prices change constantly and must be fetched via tools.
+3. When giving investment opinions, clearly separate **(a)** data & signals used, **(b)** reasoning, and **(c)** recommendation with a confidence level (High/Medium/Low) and explicit assumptions.
+4. Cite provenance for any claim derived from RAG or tools (e.g. ""Source: RAG article '...' (timestamp)"").
+5. For trade actions, always request a confirmation from the user before executing trades. Include the trade summary, estimate costs (if available), and a required confirmation phrase.
+6. Provide a short, plain-language summary (1–3 sentences) followed by a detailed reasoning block if the user asks for it.
+7. **CRITICAL**: Questions about ""current price"", ""what is the price of"", ""how much is"", ""stock price"", ""crypto price"", or any request for real-time market data MUST use `get_stock_price(symbol)`. Use simple symbols: stocks (e.g., ""AAPL"", ""MSFT"") and crypto (e.g., ""BTC"", ""ETH"").
+8. Do not output raw SQL, secrets, or personally identifiable information beyond what is necessary for the user response.
+9. Always include a brief disclaimer: ""I am not a licensed financial advisor; this is informational only.""
 
 AVAILABLE TOOLS:
 - get_stock_price(symbol) - Get current stock price
@@ -85,8 +87,9 @@ CRITICAL RULES:
 1. Output ONLY valid JSON - no markdown, no extra text before or after
 2. The ""steps"" array must contain objects with ""tool"", ""args"", and ""why"" fields
 3. Always include ""final_prompt"" in plans
-4. If user context already has the info needed, use FinalAnswer instead of Plan
-5. Keep plans minimal - only call tools that are truly needed
+4. **MANDATORY PLAN for current data**: If the query asks for current prices, real-time market data, portfolio holdings, or any information that changes frequently, you MUST use Plan format with appropriate tool calls. NEVER use FinalAnswer for queries about current prices or real-time data.
+5. Use FinalAnswer ONLY for general financial advice, explanations, or questions that don't require current data from tools
+6. Keep plans minimal - only call tools that are truly needed
 ";
         }
 
@@ -111,7 +114,7 @@ CRITICAL RULES:
             string financialHealthSummary = "")
         {
             var historyText = history.Count > 0 
-                ? string.Join("\n", history.Select(h => $"{h.Role}: {h.Content}"))
+                ? string.Join("\n", history.Select(h => FormatHistoryMessage(h)))
                 : "(no previous messages)";
             
             return $@"{ConstructSystemPrompt()}
@@ -134,6 +137,100 @@ Chat History:
 USER QUERY: {userQuery}
 
 Respond with valid JSON (Plan or FinalAnswer):";
+        }
+
+        /// <summary>
+        /// Formats a chat history message for the prompt.
+        /// For user messages: returns full content.
+        /// For assistant messages: extracts final_prompt from plan JSON if available, otherwise returns full content.
+        /// </summary>
+        private string FormatHistoryMessage(ChatMessage message)
+        {
+            if (message == null || string.IsNullOrWhiteSpace(message.Content))
+                return $"{message?.Role ?? "unknown"}: (empty)";
+
+            // User messages: return full content
+            if (string.Equals(message.Role, "user", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"user: {message.Content}";
+            }
+
+            // Assistant messages: try to extract final_prompt from plan JSON
+            if (string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase))
+            {
+                var extractedPrompt = ExtractFinalPromptFromPlan(message.Content);
+                if (!string.IsNullOrWhiteSpace(extractedPrompt))
+                {
+                    return $"assistant: {extractedPrompt}";
+                }
+                
+                // If not a plan or extraction failed, return full content
+                return $"assistant: {message.Content}";
+            }
+
+            // Fallback for unknown roles
+            return $"{message.Role}: {message.Content}";
+        }
+
+        /// <summary>
+        /// Attempts to extract meaningful content from assistant messages.
+        /// For plan JSON: extracts final_prompt.
+        /// For final_answer JSON: extracts answer_verbose (or answer_plain if verbose not available).
+        /// Returns null if extraction fails, causing fallback to full content.
+        /// </summary>
+        private string? ExtractFinalPromptFromPlan(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content))
+                return null;
+
+            try
+            {
+                // Try to parse as JSON
+                using var doc = JsonDocument.Parse(content);
+                var root = doc.RootElement;
+
+                // Check if it has a type field
+                if (root.TryGetProperty("type", out var typeProp))
+                {
+                    var type = typeProp.GetString();
+                    
+                    // Handle Plan type: extract final_prompt
+                    if (string.Equals(type, "plan", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (root.TryGetProperty("final_prompt", out var finalPromptProp))
+                        {
+                            return finalPromptProp.GetString();
+                        }
+                    }
+                    
+                    // Handle FinalAnswer type: extract answer_verbose or answer_plain
+                    if (string.Equals(type, "final_answer", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Prefer answer_verbose, fallback to answer_plain
+                        if (root.TryGetProperty("answer_verbose", out var verboseProp))
+                        {
+                            var verbose = verboseProp.GetString();
+                            if (!string.IsNullOrWhiteSpace(verbose))
+                                return verbose;
+                        }
+                        
+                        if (root.TryGetProperty("answer_plain", out var plainProp))
+                        {
+                            return plainProp.GetString();
+                        }
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // Not valid JSON, return null to use full content
+            }
+            catch (Exception)
+            {
+                // Any other parsing error, return null to use full content
+            }
+
+            return null;
         }
 
         public string PostProcessModelOutput(string modelOutput)

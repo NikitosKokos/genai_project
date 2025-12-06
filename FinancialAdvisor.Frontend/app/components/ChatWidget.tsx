@@ -10,7 +10,7 @@ import rehypeRaw from 'rehype-raw';
 // Dynamic import for DOMPurify to avoid SSR issues
 let DOMPurify: any;
 if (typeof window !== 'undefined') {
-  DOMPurify = require('isomorphic-dompurify');
+   DOMPurify = require('isomorphic-dompurify');
 }
 import Image from 'next/image';
 
@@ -154,7 +154,7 @@ export function ChatWidget() {
 
          await api.chat.streamMessage(
             userMessage.content,
-            'test-session', // Using consistent session
+            'demo_session_001', // Using consistent session
             enableReasoning,
             documentCount,
             (chunk) => {
@@ -391,11 +391,13 @@ export function ChatWidget() {
                                           <div
                                              className="text-xs text-zinc-600 dark:text-zinc-500 leading-relaxed whitespace-pre-wrap font-mono mt-1"
                                              dangerouslySetInnerHTML={{
-                                                __html: DOMPurify ? DOMPurify.sanitize(message.thinking, {
-                                                   ALLOWED_TAGS: [],
-                                                   ALLOWED_ATTR: [],
-                                                   KEEP_CONTENT: true,
-                                                }) : message.thinking,
+                                                __html: DOMPurify
+                                                   ? DOMPurify.sanitize(message.thinking, {
+                                                        ALLOWED_TAGS: [],
+                                                        ALLOWED_ATTR: [],
+                                                        KEEP_CONTENT: true,
+                                                     })
+                                                   : message.thinking,
                                              }}
                                           />
                                        </div>
@@ -407,7 +409,9 @@ export function ChatWidget() {
                                  </>
                               ) : (
                                  <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                                    {DOMPurify ? DOMPurify.sanitize(message.content, { ALLOWED_TAGS: [] }) : message.content}
+                                    {DOMPurify
+                                       ? DOMPurify.sanitize(message.content, { ALLOWED_TAGS: [] })
+                                       : message.content}
                                  </p>
                               )}
                               <p className="text-xs mt-2 opacity-70">
@@ -615,36 +619,38 @@ function OptimizedMarkdown({ content }: { content: string }) {
 
    // Sanitize content (defense in depth - react-markdown already sanitizes)
    // Don't use useMemo here - we want immediate updates during streaming
-   const sanitizedContent = DOMPurify ? DOMPurify.sanitize(content, {
-      ALLOWED_TAGS: [
-         'p',
-         'strong',
-         'em',
-         'code',
-         'pre',
-         'ul',
-         'ol',
-         'li',
-         'h1',
-         'h2',
-         'h3',
-         'h4',
-         'h5',
-         'h6',
-         'a',
-         'blockquote',
-         'hr',
-         'table',
-         'thead',
-         'tbody',
-         'tr',
-         'th',
-         'td',
-         'br',
-      ],
-      ALLOWED_ATTR: ['href', 'target', 'rel', 'className'],
-      ALLOW_DATA_ATTR: false,
-   }) : content;
+   const sanitizedContent = DOMPurify
+      ? DOMPurify.sanitize(content, {
+           ALLOWED_TAGS: [
+              'p',
+              'strong',
+              'em',
+              'code',
+              'pre',
+              'ul',
+              'ol',
+              'li',
+              'h1',
+              'h2',
+              'h3',
+              'h4',
+              'h5',
+              'h6',
+              'a',
+              'blockquote',
+              'hr',
+              'table',
+              'thead',
+              'tbody',
+              'tr',
+              'th',
+              'td',
+              'br',
+           ],
+           ALLOWED_ATTR: ['href', 'target', 'rel', 'className'],
+           ALLOW_DATA_ATTR: false,
+        })
+      : content;
 
    return (
       <div className="markdown-content text-sm leading-relaxed">

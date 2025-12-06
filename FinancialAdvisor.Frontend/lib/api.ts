@@ -33,7 +33,7 @@ export const api = {
       sendMessage: async (message: string) => {
          return fetchJson('/Chat/stream', {
             method: 'POST',
-            body: JSON.stringify({ message: message, sessionId: 'test-user-123' }), // Hardcoded userId for demo
+            body: JSON.stringify({ message: message, sessionId: 'demo_session_001' }), // Hardcoded userId for demo
          });
       },
       streamMessage: async (

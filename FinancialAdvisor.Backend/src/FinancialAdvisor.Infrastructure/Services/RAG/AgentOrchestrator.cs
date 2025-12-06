@@ -33,9 +33,75 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             _logger = logger;
         }
 
+        /// <summary>
+        /// Determines if a user query requires tool usage (e.g., current prices, portfolio data).
+        /// Queries that require real-time data must go through the planning path to use tools.
+        /// </summary>
+        private bool RequiresToolUsage(string userQuery)
+        {
+            if (string.IsNullOrWhiteSpace(userQuery))
+                return false;
+
+            var queryLower = userQuery.ToLowerInvariant();
+            
+            // Keywords that indicate need for current price data
+            var priceKeywords = new[]
+            {
+                "price", "cost", "worth", "value", "how much",
+                "current price", "stock price", "crypto price",
+                "what is the price", "what's the price", "price of",
+                "trading at", "selling for", "buying at"
+            };
+
+            // Keywords that indicate need for portfolio/holdings data
+            var portfolioKeywords = new[]
+            {
+                "portfolio", "holdings", "owned", "shares", "stocks i own",
+                "my stocks", "my portfolio", "what do i own", "current holdings"
+            };
+
+            // Keywords that indicate need for profile data
+            var profileKeywords = new[]
+            {
+                "my profile", "my account", "my balance", "cash balance",
+                "available cash", "my strategy", "risk profile"
+            };
+
+            // Check if query contains any price-related keywords
+            if (priceKeywords.Any(keyword => queryLower.Contains(keyword)))
+            {
+                return true;
+            }
+
+            // Check if query contains portfolio-related keywords
+            if (portfolioKeywords.Any(keyword => queryLower.Contains(keyword)))
+            {
+                return true;
+            }
+
+            // Check if query contains profile-related keywords
+            if (profileKeywords.Any(keyword => queryLower.Contains(keyword)))
+            {
+                return true;
+            }
+
+            // Check for specific stock/crypto symbols (likely price queries)
+            var commonSymbols = new[] { "aapl", "msft", "googl", "amzn", "tsla", "btc", "eth", "stock", "crypto" };
+            if (commonSymbols.Any(symbol => queryLower.Contains(symbol)))
+            {
+                // If it mentions a symbol AND asks about price/value, require tools
+                if (priceKeywords.Any(keyword => queryLower.Contains(keyword)))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         public async Task<object> QueryAsync(string query)
         {
-            return await ProcessQueryAsync(query, "default-session");
+            return await ProcessQueryAsync(query, "demo_session_001");
         }
 
         public async Task<ChatResponse> ProcessQueryAsync(string userQuery, string sessionId)
@@ -105,8 +171,12 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
                 history,
                 healthSummary);
 
-            // FAST PATH: when reasoning is disabled, skip planning/tools and stream a direct answer
-            if (!enableReasoning)
+            // Check if query requires tools (current prices, portfolio data, etc.)
+            bool requiresTools = RequiresToolUsage(userQuery);
+            
+            // FAST PATH: when reasoning is disabled AND query doesn't require tools, skip planning/tools
+            // BUT: Always use planning path for queries that need current data (prices, portfolio, etc.)
+            if (!enableReasoning && !requiresTools)
             {
                 yield return "<status>Generating answer...</status>";
 

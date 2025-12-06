@@ -172,16 +172,39 @@ namespace FinancialAdvisor.Infrastructure.Services
                 HttpCompletionOption.ResponseHeadersRead, 
                 cancellationToken);
             
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogError("DeepSeek API error: {StatusCode} - {Error}", response.StatusCode, errorContent);
+                yield return $"<status>Error: DeepSeek API returned {response.StatusCode}</status>";
+                yield break;
+            }
 
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var reader = new StreamReader(stream);
 
             var thinkingBuffer = new StringBuilder();
+            string? errorMessage = null;
+            bool wasCancelled = false;
             
+            // Read stream with error handling
             while (!reader.EndOfStream && !cancellationToken.IsCancellationRequested)
             {
-                var line = await reader.ReadLineAsync();
+                // Use helper method to safely read line (avoids yield in try-catch restriction)
+                var readResult = await ReadLineSafelyAsync(reader, cancellationToken);
+                if (readResult.IsCancelled)
+                {
+                    wasCancelled = true;
+                    _logger.LogInformation("DeepSeek stream cancelled");
+                    break;
+                }
+                if (readResult.HasError)
+                {
+                    errorMessage = readResult.ErrorMessage;
+                    break;
+                }
+                
+                var line = readResult.Line;
                 if (string.IsNullOrEmpty(line)) continue;
                 
                 // SSE format: "data: {...}"
@@ -244,7 +267,7 @@ namespace FinancialAdvisor.Infrastructure.Services
                 }
             }
 
-            // Emit any remaining thinking buffer
+            // Emit any remaining thinking buffer (outside try-catch)
             if (thinkingBuffer.Length > 0)
             {
                 var escapedThinking = thinkingBuffer.ToString()
@@ -252,6 +275,16 @@ namespace FinancialAdvisor.Infrastructure.Services
                     .Replace("<", "&lt;")
                     .Replace(">", "&gt;");
                 yield return $"<thinking>{escapedThinking}</thinking>";
+            }
+
+            // Handle errors and cancellation (outside try-catch)
+            if (wasCancelled)
+            {
+                yield return "<status>Stream cancelled</status>";
+            }
+            else if (!string.IsNullOrEmpty(errorMessage))
+            {
+                yield return $"<status>Error: {errorMessage}</status>";
             }
         }
 
@@ -306,78 +339,206 @@ namespace FinancialAdvisor.Infrastructure.Services
                 Content = requestContent 
             };
             
-            using var response = await _httpClient.SendAsync(
-                requestMessage, 
-                HttpCompletionOption.ResponseHeadersRead, 
-                cancellationToken);
+            HttpResponseMessage? response = null;
+            string? connectionError = null;
             
-            response.EnsureSuccessStatusCode();
+            try
+            {
+                response = await _httpClient.SendAsync(
+                    requestMessage, 
+                    HttpCompletionOption.ResponseHeadersRead, 
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to connect to Ollama at {Endpoint}", _apiEndpoint);
+                connectionError = $"Failed to connect to Ollama. Please check if Ollama is running at {_apiEndpoint}";
+            }
+            
+            if (connectionError != null)
+            {
+                yield return $"<status>Error: {connectionError}</status>";
+                yield break;
+            }
+            
+            if (response == null)
+            {
+                yield return "<status>Error: No response from Ollama</status>";
+                yield break;
+            }
+            
+            using (response)
+            {
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync(cancellationToken);
+                    _logger.LogError("Ollama API error: {StatusCode} - {Error}", response.StatusCode, errorContent);
+                    
+                    // Provide more helpful error messages based on status code
+                    string httpErrorMessage;
+                    if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                    {
+                        httpErrorMessage = $"Model '{_modelName}' not found in Ollama. Please pull the model first by running: docker exec fin-advisor-ollama ollama pull {_modelName}";
+                    }
+                    else if (response.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
+                    {
+                        httpErrorMessage = "Ollama service is unavailable. Please check if Ollama is running and accessible.";
+                    }
+                    else
+                    {
+                        httpErrorMessage = $"Ollama API returned {response.StatusCode}. Error: {errorContent}";
+                    }
+                    
+                    yield return $"<status>Error: {httpErrorMessage}</status>";
+                    yield break;
+                }
 
-            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var reader = new StreamReader(stream);
+                using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var reader = new StreamReader(stream);
 
-            var accumulatedThinking = new StringBuilder();
+                var accumulatedThinking = new StringBuilder();
+                string? errorMessage = null;
+                bool wasCancelled = false;
 
-            while (!reader.EndOfStream && !cancellationToken.IsCancellationRequested)
+                // Read stream with error handling
+                while (!reader.EndOfStream && !cancellationToken.IsCancellationRequested)
+                {
+                    // Use helper method to safely read line (avoids yield in try-catch restriction)
+                    var readResult = await ReadLineSafelyAsync(reader, cancellationToken);
+                    if (readResult.IsCancelled)
+                    {
+                        wasCancelled = true;
+                        _logger.LogInformation("Ollama stream cancelled");
+                        break;
+                    }
+                    if (readResult.HasError)
+                    {
+                        // Enhance error message for Ollama-specific context
+                        var baseError = readResult.ErrorMessage ?? "Stream read failed";
+                        errorMessage = baseError.Contains("terminated", StringComparison.OrdinalIgnoreCase) 
+                            ? "Connection to Ollama was terminated. Please check if Ollama is running."
+                            : baseError;
+                        break;
+                    }
+                    
+                    var line = readResult.Line;
+                    if (string.IsNullOrEmpty(line)) continue;
+
+                    OllamaResponse? chunk = null;
+                    try 
+                    {
+                        chunk = JsonSerializer.Deserialize<OllamaResponse>(line);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to parse Ollama chunk: {Line}", line);
+                        continue;
+                    }
+
+                    if (chunk == null) continue;
+
+                    // Check if done
+                    if (chunk.Done) break;
+
+                    // Handle thinking
+                    if (enableReasoning && !string.IsNullOrEmpty(chunk.Thinking))
+                    {
+                        accumulatedThinking.Append(chunk.Thinking);
+                        
+                        if (accumulatedThinking.Length > 100 || 
+                            chunk.Thinking.EndsWith("\n") || 
+                            chunk.Thinking.EndsWith(". "))
+                        {
+                            var escapedThinking = accumulatedThinking.ToString()
+                                .Replace("&", "&amp;")
+                                .Replace("<", "&lt;")
+                                .Replace(">", "&gt;");
+                            yield return $"<thinking>{escapedThinking}</thinking>";
+                            accumulatedThinking.Clear();
+                        }
+                    }
+
+                    // Handle response
+                    if (!string.IsNullOrEmpty(chunk.Response))
+                    {
+                        var text = chunk.Response
+                            .Replace("<think>", "")
+                            .Replace("</think>", "");
+                        
+                        if (!string.IsNullOrEmpty(text))
+                        {
+                            var safeText = text.Replace("]]>", "]]]]><![CDATA[>");
+                            yield return $"<response><![CDATA[{safeText}]]></response>";
+                        }
+                    }
+                }
+
+                // Emit remaining thinking (outside try-catch)
+                if (accumulatedThinking.Length > 0)
+                {
+                    var escapedThinking = accumulatedThinking.ToString()
+                        .Replace("&", "&amp;")
+                        .Replace("<", "&lt;")
+                        .Replace(">", "&gt;");
+                    yield return $"<thinking>{escapedThinking}</thinking>";
+                }
+
+                // Handle errors and cancellation (outside try-catch)
+                if (wasCancelled)
+                {
+                    yield return "<status>Stream cancelled</status>";
+                }
+                else if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    // Provide more helpful error messages
+                    var finalErrorMsg = errorMessage;
+                    if (errorMessage.Contains("terminated", StringComparison.OrdinalIgnoreCase))
+                    {
+                        finalErrorMsg = "Connection to Ollama was terminated. Please check if Ollama is running and accessible.";
+                    }
+                    else if (errorMessage.Contains("connection", StringComparison.OrdinalIgnoreCase))
+                    {
+                        finalErrorMsg = $"Connection error: {errorMessage}. Please check if Ollama is running at {_apiEndpoint}";
+                    }
+                    
+                    yield return $"<status>Error: {finalErrorMsg}</status>";
+                }
+            }
+        }
+
+        #endregion
+
+        #region Helper Methods
+
+        private async Task<ReadLineResult> ReadLineSafelyAsync(StreamReader reader, CancellationToken cancellationToken)
+        {
+            try
             {
                 var line = await reader.ReadLineAsync();
-                if (string.IsNullOrEmpty(line)) continue;
-
-                OllamaResponse? chunk = null;
-                try 
-                {
-                    chunk = JsonSerializer.Deserialize<OllamaResponse>(line);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to parse Ollama chunk");
-                    continue;
-                }
-
-                if (chunk == null) continue;
-
-                // Handle thinking
-                if (enableReasoning && !string.IsNullOrEmpty(chunk.Thinking))
-                {
-                    accumulatedThinking.Append(chunk.Thinking);
-                    
-                    if (accumulatedThinking.Length > 100 || 
-                        chunk.Thinking.EndsWith("\n") || 
-                        chunk.Thinking.EndsWith(". "))
-                    {
-                        var escapedThinking = accumulatedThinking.ToString()
-                            .Replace("&", "&amp;")
-                            .Replace("<", "&lt;")
-                            .Replace(">", "&gt;");
-                        yield return $"<thinking>{escapedThinking}</thinking>";
-                        accumulatedThinking.Clear();
-                    }
-                }
-
-                // Handle response
-                if (!string.IsNullOrEmpty(chunk.Response))
-                {
-                    var text = chunk.Response
-                        .Replace("<think>", "")
-                        .Replace("</think>", "");
-                    
-                    if (!string.IsNullOrEmpty(text))
-                    {
-                        var safeText = text.Replace("]]>", "]]]]><![CDATA[>");
-                        yield return $"<response><![CDATA[{safeText}]]></response>";
-                    }
-                }
+                return new ReadLineResult { Line = line };
             }
-
-            // Emit remaining thinking
-            if (accumulatedThinking.Length > 0)
+            catch (OperationCanceledException)
             {
-                var escapedThinking = accumulatedThinking.ToString()
-                    .Replace("&", "&amp;")
-                    .Replace("<", "&lt;")
-                    .Replace(">", "&gt;");
-                yield return $"<thinking>{escapedThinking}</thinking>";
+                return new ReadLineResult { IsCancelled = true };
             }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reading from stream: {ExceptionType} - {Message}", ex.GetType().Name, ex.Message);
+                
+                var errorMsg = ex.Message.Contains("terminated", StringComparison.OrdinalIgnoreCase) 
+                    ? "Connection was terminated"
+                    : $"Stream read failed: {ex.Message}";
+                
+                return new ReadLineResult { HasError = true, ErrorMessage = errorMsg };
+            }
+        }
+
+        private class ReadLineResult
+        {
+            public string? Line { get; set; }
+            public bool IsCancelled { get; set; }
+            public bool HasError { get; set; }
+            public string? ErrorMessage { get; set; }
         }
 
         #endregion
