@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { X, TrendingUp, AlertCircle, DollarSign, BarChart3, ArrowRight, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, TrendingUp, AlertCircle, DollarSign, BarChart3, ArrowRight, ChevronLeft, ChevronRight, Newspaper, Loader2 } from 'lucide-react';
 import { useUI } from '../context/UIContext';
+import { api } from '@/lib/api';
 
 interface NewsItem {
   id: string;
@@ -11,68 +12,115 @@ interface NewsItem {
   description: string;
   fullContent: string;
   timestamp: string;
+  source: string;
   icon: React.ReactNode;
 }
 
-const newsItems: NewsItem[] = [
-  {
-    id: '1',
-    type: 'market',
-    title: 'Tech Sector Momentum',
-    description: 'Tech sector shows strong momentum today with major indices up 1.5%.',
-    fullContent: 'The technology sector is experiencing significant momentum today, with the NASDAQ up 1.5% and major tech stocks leading the gains. Apple (AAPL) and Microsoft (MSFT) are both up over 2%, while NVIDIA (NVDA) continues its strong performance with a 3% gain. Analysts attribute this to positive earnings expectations and strong consumer demand for tech products.',
-    timestamp: '2 minutes ago',
-    icon: <TrendingUp className="size-5" />,
-  },
-  {
-    id: '2',
-    type: 'portfolio',
-    title: 'Portfolio Alert: NVDA',
-    description: 'Your simulated position in NVDA is up 2.5% today.',
-    fullContent: 'Your simulated position in NVIDIA (NVDA) has increased by 2.5% today, adding approximately $60.69 to your portfolio value. The stock is currently trading at $485.50, up from yesterday\'s close. This represents a strong performance for your 5-share position, which is now valued at $2,427.50.',
-    timestamp: '15 minutes ago',
-    icon: <DollarSign className="size-5" />,
-  },
-  {
-    id: '3',
-    type: 'alert',
-    title: 'Market Volatility Warning',
-    description: 'Increased volatility detected in the energy sector.',
-    fullContent: 'Market analysts are reporting increased volatility in the energy sector today, with oil prices fluctuating significantly. This may impact related stocks and ETFs. Consider reviewing your energy-related positions and adjusting your risk management strategies accordingly.',
-    timestamp: '1 hour ago',
-    icon: <AlertCircle className="size-5" />,
-  },
-  {
-    id: '4',
-    type: 'insight',
-    title: 'Portfolio Diversification',
-    description: 'Your portfolio shows good diversification across tech stocks.',
-    fullContent: 'Your current portfolio demonstrates strong diversification across technology stocks, with positions in Apple, Microsoft, NVIDIA, Alphabet, and Tesla. This diversification helps mitigate risk while maintaining exposure to the high-growth technology sector. Consider reviewing your allocation percentages to ensure optimal risk-return balance.',
-    timestamp: '2 hours ago',
-    icon: <BarChart3 className="size-5" />,
-  },
-  {
-    id: '5',
-    type: 'market',
-    title: 'Earnings Season Update',
-    description: 'Upcoming earnings reports may impact your holdings.',
-    fullContent: 'Several companies in your portfolio are approaching their earnings announcement dates. Apple and Microsoft are scheduled to report next week, which could significantly impact their stock prices. Historical data shows that these companies tend to experience increased volatility around earnings announcements. Consider monitoring these positions closely.',
-    timestamp: '3 hours ago',
-    icon: <TrendingUp className="size-5" />,
-  },
-];
+interface ApiNewsItem {
+  id: string;
+  title: string;
+  summary: string;
+  content: string; // Full content from backend
+  source: string;
+  publishedAt: string;
+}
+
+// Helper to determine news type based on content
+const getNewsType = (title: string, source: string): 'market' | 'portfolio' | 'alert' | 'insight' => {
+  const lowerTitle = title.toLowerCase();
+  if (lowerTitle.includes('alert') || lowerTitle.includes('warning') || lowerTitle.includes('risk')) {
+    return 'alert';
+  }
+  if (lowerTitle.includes('portfolio') || lowerTitle.includes('your')) {
+    return 'portfolio';
+  }
+  if (lowerTitle.includes('analysis') || lowerTitle.includes('insight') || lowerTitle.includes('outlook')) {
+    return 'insight';
+  }
+  return 'market';
+};
+
+// Helper to get time ago string
+const getTimeAgo = (dateString: string): string => {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
+  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+  return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+};
+
+// Helper to get icon based on news type
+const getNewsIcon = (type: string) => {
+  switch (type) {
+    case 'alert': return <AlertCircle className="size-5" />;
+    case 'portfolio': return <DollarSign className="size-5" />;
+    case 'insight': return <BarChart3 className="size-5" />;
+    default: return <TrendingUp className="size-5" />;
+  }
+};
 
 const SCROLL_INTERVAL = 4000; // 4 seconds
 
 export function WhatsNewPanel() {
   const { setModalOpen } = useUI();
+  const [newsItems, setNewsItems] = useState<NewsItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedItem, setSelectedItem] = useState<NewsItem | null>(null);
   const [isPaused, setIsPaused] = useState(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Fetch news from API on mount
   useEffect(() => {
-    if (!isPaused && !selectedItem) {
+    const fetchNews = async () => {
+      try {
+        const data = await api.dashboard.getNews() as ApiNewsItem[];
+        const transformedNews: NewsItem[] = data.map((item) => {
+          const type = getNewsType(item.title, item.source);
+          return {
+            id: item.id,
+            type,
+            title: item.title,
+            description: item.summary,
+            fullContent: item.content || item.summary, // Use full content from API
+            timestamp: getTimeAgo(item.publishedAt),
+            source: item.source,
+            icon: getNewsIcon(type),
+          };
+        });
+        setNewsItems(transformedNews);
+      } catch (error) {
+        console.error('Failed to fetch news:', error);
+        // Set fallback news on error
+        setNewsItems([{
+          id: 'fallback',
+          type: 'market',
+          title: 'Market Update',
+          description: 'Unable to load latest news. Please try again later.',
+          fullContent: 'Unable to load latest news. Please try again later.',
+          timestamp: 'Now',
+          source: 'System',
+          icon: <Newspaper className="size-5" />,
+        }]);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchNews();
+    // Refresh news every 5 minutes
+    const refreshInterval = setInterval(fetchNews, 5 * 60 * 1000);
+    return () => clearInterval(refreshInterval);
+  }, []);
+
+  useEffect(() => {
+    if (!isPaused && !selectedItem && newsItems.length > 0) {
       intervalRef.current = setInterval(() => {
         setCurrentIndex((prev) => (prev + 1) % newsItems.length);
       }, SCROLL_INTERVAL);
@@ -83,7 +131,7 @@ export function WhatsNewPanel() {
         clearInterval(intervalRef.current);
       }
     };
-  }, [isPaused, selectedItem]);
+  }, [isPaused, selectedItem, newsItems.length]);
 
   const resetInterval = () => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -120,7 +168,7 @@ export function WhatsNewPanel() {
     resetInterval();
   };
 
-  const currentItem = newsItems[currentIndex];
+  const currentItem = newsItems.length > 0 ? newsItems[currentIndex] : null;
 
   const getTypeColor = (type: string) => {
     switch (type) {
@@ -145,64 +193,76 @@ export function WhatsNewPanel() {
         </div>
         
         <div className="flex-1 relative overflow-hidden rounded-xl bg-gradient-to-br from-zinc-50 to-zinc-100 dark:from-zinc-800 dark:to-zinc-900 border border-zinc-200 dark:border-zinc-700">
-            <div
-              key={currentItem.id}
-              className="absolute inset-0 animate-slide-up cursor-pointer group p-6 flex flex-col justify-between pb-12"
-              onClick={() => handleItemClick(currentItem)}
-            >
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <div className={`p-2 rounded-lg ${getTypeColor(currentItem.type)}`}>
-                  {currentItem.icon}
+          {isLoading ? (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <Loader2 className="size-8 animate-spin text-blue-500" />
+            </div>
+          ) : currentItem ? (
+            <>
+              <div
+                key={currentItem.id}
+                className="absolute inset-0 animate-slide-up cursor-pointer group p-5 flex flex-col pb-14"
+                onClick={() => handleItemClick(currentItem)}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <div className={`p-1.5 rounded-lg ${getTypeColor(currentItem.type)}`}>
+                    {currentItem.icon}
+                  </div>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${getTypeColor(currentItem.type)}`}>
+                    {currentItem.type.charAt(0).toUpperCase() + currentItem.type.slice(1)}
+                  </span>
+                  <span className="text-xs text-zinc-500 ml-auto">{currentItem.timestamp}</span>
                 </div>
-                <span className={`text-xs px-2 py-1 rounded-full font-medium ${getTypeColor(currentItem.type)}`}>
-                  {currentItem.type.charAt(0).toUpperCase() + currentItem.type.slice(1)}
-                </span>
-                <span className="text-xs text-zinc-500 ml-auto">{currentItem.timestamp}</span>
+                <h3 className="font-semibold text-base mb-1.5 line-clamp-2">{currentItem.title}</h3>
+                <p className="text-sm text-zinc-600 dark:text-zinc-400 line-clamp-4 mb-2 flex-1">{currentItem.description}</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-zinc-400 dark:text-zinc-500">Source: {currentItem.source}</p>
+                  <div className="flex items-center gap-1 text-blue-600 dark:text-blue-400 text-xs font-medium group-hover:gap-2 transition-all">
+                    Read more <ArrowRight className="size-3" />
+                  </div>
+                </div>
               </div>
-              <h3 className="font-semibold text-lg mb-2">{currentItem.title}</h3>
-              <p className="text-sm text-zinc-600 dark:text-zinc-400 line-clamp-3 mb-4">{currentItem.description}</p>
-              
-              <div className="flex items-center gap-1 text-blue-600 dark:text-blue-400 text-sm font-medium mt-auto group-hover:gap-2 transition-all">
-                Read full update <ArrowRight className="size-4" />
+
+              {/* Integrated Navigation Overlay - Horizontal Bottom */}
+              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full transition-all duration-300 border border-transparent hover:bg-white/50 hover:dark:bg-black/20 hover:backdrop-blur-sm hover:border-zinc-200/50 hover:dark:border-zinc-700/50 pointer-events-auto">
+                <button 
+                  onClick={(e) => { e.stopPropagation(); handlePrevious(); }}
+                  className="p-1 rounded-full transition-colors text-zinc-300 hover:text-zinc-600 dark:text-zinc-600 dark:hover:text-zinc-200"
+                >
+                  <ChevronLeft className="size-4" />
+                </button>
+                
+                <div className="flex gap-1.5 px-1">
+                  {newsItems.map((_, idx) => (
+                    <button
+                      key={idx}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        jumpToSlide(idx);
+                      }}
+                      className={`h-1.5 rounded-full transition-all duration-300 ${
+                        idx === currentIndex
+                          ? 'bg-blue-600 w-6'
+                          : 'bg-zinc-300 dark:bg-zinc-600 w-1.5 hover:bg-blue-400'
+                      }`}
+                      aria-label={`Go to slide ${idx + 1}`}
+                    />
+                  ))}
+                </div>
+
+                <button 
+                  onClick={(e) => { e.stopPropagation(); handleNext(); }}
+                  className="p-1 rounded-full transition-colors text-zinc-300 hover:text-zinc-600 dark:text-zinc-600 dark:hover:text-zinc-200"
+                >
+                  <ChevronRight className="size-4" />
+                </button>
               </div>
+            </>
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center text-zinc-500">
+              No news available
             </div>
-          </div>
-
-          {/* Integrated Navigation Overlay - Horizontal Bottom */}
-          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3 py-1.5 rounded-full transition-all duration-300 border border-transparent hover:bg-white/50 hover:dark:bg-black/20 hover:backdrop-blur-sm hover:border-zinc-200/50 hover:dark:border-zinc-700/50 z-10">
-            <button 
-              onClick={(e) => { e.stopPropagation(); handlePrevious(); }}
-              className="p-1 rounded-full transition-colors text-zinc-300 hover:text-zinc-600 dark:text-zinc-600 dark:hover:text-zinc-200"
-            >
-              <ChevronLeft className="size-4" />
-            </button>
-            
-            <div className="flex gap-1.5 px-1">
-              {newsItems.map((_, idx) => (
-                <button
-                  key={idx}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    jumpToSlide(idx);
-                  }}
-                  className={`h-1.5 rounded-full transition-all duration-300 ${
-                    idx === currentIndex
-                      ? 'bg-blue-600 w-6'
-                      : 'bg-zinc-300 dark:bg-zinc-600 w-1.5 hover:bg-blue-400'
-                  }`}
-                  aria-label={`Go to slide ${idx + 1}`}
-                />
-              ))}
-            </div>
-
-            <button 
-              onClick={(e) => { e.stopPropagation(); handleNext(); }}
-              className="p-1 rounded-full transition-colors text-zinc-300 hover:text-zinc-600 dark:text-zinc-600 dark:hover:text-zinc-200"
-            >
-              <ChevronRight className="size-4" />
-            </button>
-          </div>
+          )}
         </div>
       </div>
 
@@ -235,8 +295,11 @@ export function WhatsNewPanel() {
               </button>
             </div>
             <div className="p-6">
-              <div className={`inline-block px-3 py-1 rounded-full text-sm font-medium mb-4 ${getTypeColor(selectedItem.type)}`}>
-                {selectedItem.type.charAt(0).toUpperCase() + selectedItem.type.slice(1)}
+              <div className="flex items-center gap-2 mb-4">
+                <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${getTypeColor(selectedItem.type)}`}>
+                  {selectedItem.type.charAt(0).toUpperCase() + selectedItem.type.slice(1)}
+                </span>
+                <span className="text-sm text-zinc-500">via {selectedItem.source}</span>
               </div>
               <p className="text-zinc-700 dark:text-zinc-300 leading-relaxed whitespace-pre-line">
                 {selectedItem.fullContent}

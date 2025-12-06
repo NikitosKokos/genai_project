@@ -13,5 +13,12 @@ namespace FinancialAdvisor.Application.Interfaces
         // Chat History
         Task AddChatMessageAsync(string sessionId, ChatMessage message);
         Task<List<ChatMessage>> GetChatHistoryAsync(string sessionId, int limit = 6);
+        
+        // Semantic Context
+        Task<string> GetFinancialHealthSummaryAsync(string sessionId);
+        string BuildFinancialHealthSummary(Session session, PortfolioSnapshot portfolio);
+
+        // Metadata
+        Task UpdateMetadataAsync(string sessionId, string symbol = null, string tool = null);
     }
 }

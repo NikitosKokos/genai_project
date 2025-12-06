@@ -73,11 +73,14 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             var historyTask = _contextService.GetChatHistoryAsync(sessionId, 6);
             var sessionTask = _contextService.GetSessionAsync(sessionId);
             var portfolioTask = _contextService.GetPortfolioAsync(sessionId);
+            
             await Task.WhenAll(historyTask, sessionTask, portfolioTask);
             
             var history = historyTask.Result;
             var session = sessionTask.Result;
             var portfolio = portfolioTask.Result;
+            // Build health summary from already-fetched data (avoids redundant DB calls)
+            var healthSummary = _contextService.BuildFinancialHealthSummary(session, portfolio);
 
             // 2. Proactive RAG
             var ragTool = _tools.FirstOrDefault(t => t.Name == "search_rag");
@@ -99,7 +102,76 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
                 marketContext, 
                 ragContext, 
                 session, 
-                history);
+                history,
+                healthSummary);
+
+            // FAST PATH: when reasoning is disabled, skip planning/tools and stream a direct answer
+            if (!enableReasoning)
+            {
+                yield return "<status>Generating answer...</status>";
+
+                // Create a direct-answer prompt that explicitly requests plain text
+                var directAnswerPrompt = $@"You are FinAssist, a helpful financial assistant. Answer the user's question directly in plain, conversational text.
+
+IMPORTANT RULES:
+- DO NOT output JSON. DO NOT use curly braces or square brackets.
+- Write naturally as if speaking to a friend who asked for financial advice.
+- Be concise but helpful.
+- If you reference data, cite it naturally (e.g., ""Based on your portfolio..."").
+- End with a brief disclaimer: ""Note: I'm not a licensed financial advisor; this is informational only.""
+
+USER CONTEXT:
+{healthSummary}
+
+Portfolio:
+{portfolioContext}
+
+Recent News/Knowledge:
+{ragContext}
+
+User's Question: {userQuery}
+
+Your helpful response (plain text only):";
+
+                var plainBuilder = new System.Text.StringBuilder();
+
+                await foreach (var token in _llmService.GenerateFinancialAdviceStreamAsync(
+                    userQuery,
+                    directAnswerPrompt,
+                    sessionId,
+                    cancellationToken,
+                    enableReasoning: false))
+                {
+                    if (cancellationToken.IsCancellationRequested) yield break;
+
+                    // Stream response tokens directly
+                    yield return token;
+                    
+                    // Extract content for history
+                    if (token.StartsWith("<response><![CDATA["))
+                    {
+                        var start = token.IndexOf("<![CDATA[", StringComparison.Ordinal) + 9;
+                        var end = token.IndexOf("]]></response>", StringComparison.Ordinal);
+                        if (start > 8 && end > start)
+                        {
+                            var inner = token.Substring(start, end - start);
+                            inner = inner.Replace("]]]]><![CDATA[>", "]]>");
+                            plainBuilder.Append(inner);
+                        }
+                    }
+                }
+
+                string answerText = plainBuilder.ToString();
+                if (string.IsNullOrWhiteSpace(answerText))
+                {
+                    answerText = "(no content)";
+                }
+
+                // Persist chat history (user + assistant)
+                await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "user", Content = userQuery });
+                await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "assistant", Content = answerText });
+                yield break;
+            }
 
             yield return "<status>Planning...</status>";
 
@@ -171,6 +243,7 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             JsonElement root = default;
             bool isPlan = false;
 
+            // Attempt to parse the plan JSON; be lenient so we don't leak the plan to the client
             try 
             {
                 doc = JsonDocument.Parse(processedResponse);
@@ -187,18 +260,88 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
                 // Cannot yield in catch block
             }
 
+            // Heuristic: if the model returned a plan JSON string that failed strict parsing,
+            // treat it as a plan to avoid sending raw plan JSON to the client.
+            if (!isPlan && processedResponse.Contains("\"type\"", StringComparison.OrdinalIgnoreCase) &&
+                processedResponse.Contains("plan", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    doc = JsonDocument.Parse(processedResponse);
+                    root = doc.RootElement;
+                    if (root.TryGetProperty("type", out var typeProp))
+                    {
+                        var typeStr = typeProp.GetString()?.ToLower();
+                        if (typeStr == "plan") isPlan = true;
+                    }
+                }
+                catch (JsonException ex)
+                {
+                    _logger.LogWarning(ex, "Heuristic plan parse failed; still treating as plan to avoid leaking raw JSON.");
+                    isPlan = true;
+                }
+            }
+
             if (doc == null && !isPlan)
             {
-                 yield return processedResponse;
-                 yield break;
+                // Safeguard: if we can't parse the response and it's not a plan,
+                // treat it as plain text and wrap it properly
+                _logger.LogWarning("[{SessionId}] Unparseable response, treating as plain text.", sessionId);
+                yield return "<status>Finalizing answer...</status>";
+                
+                // Stream in chunks with proper wrapping
+                const int chunkSize = 50;
+                for (int i = 0; i < processedResponse.Length; i += chunkSize)
+                {
+                    if (cancellationToken.IsCancellationRequested) yield break;
+                    int length = Math.Min(chunkSize, processedResponse.Length - i);
+                    var chunk = processedResponse.Substring(i, length);
+                    var safeChunk = chunk.Replace("]]>", "]]]]><![CDATA[>");
+                    yield return $"<response><![CDATA[{safeChunk}]]></response>";
+                    await Task.Delay(5, cancellationToken);
+                }
+                
+                await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "user", Content = userQuery });
+                await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "assistant", Content = processedResponse });
+                yield break;
             }
 
             if (isPlan)
             {
+                // Validate that we can actually execute the plan (root must be valid)
+                if (root.ValueKind == JsonValueKind.Undefined || !root.TryGetProperty("steps", out var stepsElement))
+                {
+                    // Plan detected but malformed - fall back to direct answer
+                    _logger.LogWarning("[{SessionId}] Plan JSON detected but malformed or missing 'steps'. Falling back to direct answer.", sessionId);
+                    yield return "<status>Generating answer...</status>";
+                    
+                    // Re-prompt the LLM for a direct, plain-text answer
+                    var fallbackPrompt = $@"The user asked: ""{userQuery}""
+
+Based on the available context, provide a helpful, conversational response in plain text.
+Do NOT use JSON format. Write naturally as if speaking to a friend.
+If you don't have enough information, say so politely.
+
+Context:
+{fullPrompt}
+
+Your response:";
+
+                    await foreach (var token in _llmService.GenerateFinancialAdviceStreamAsync(userQuery, fallbackPrompt, sessionId, cancellationToken, false))
+                    {
+                        if (cancellationToken.IsCancellationRequested) yield break;
+                        yield return token;
+                    }
+                    
+                    await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "user", Content = userQuery });
+                    await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "assistant", Content = "(fallback response)" });
+                    yield break;
+                }
+
                 // EXECUTE PLAN
                 yield return "<status>Executing plan...</status>";
                 
-                var steps = root.GetProperty("steps");
+                var steps = stepsElement;
                 var toolOutputs = new List<string>();
 
                 foreach (var step in steps.EnumerateArray())
@@ -218,6 +361,17 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
                     {
                         var output = await tool.ExecuteAsync(argsJson);
                         toolOutputs.Add($"Tool '{toolName}' output: {output}");
+
+                        // Update metadata for context persistence
+                        string symbol = null;
+                        try 
+                        {
+                            using var argsDoc = JsonDocument.Parse(argsJson);
+                            if (argsDoc.RootElement.TryGetProperty("symbol", out var sym))
+                                symbol = sym.GetString();
+                        } catch {} // Best effort extraction
+
+                        await _contextService.UpdateMetadataAsync(sessionId, symbol, toolName);
                     }
                     else
                     {
@@ -227,7 +381,13 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
 
                 // 6. Final Generation
                 yield return "<status>Finalizing answer...</status>";
-                var finalPromptInstruction = root.GetProperty("final_prompt").GetString();
+                
+                string finalPromptInstruction = "Provide a helpful response based on the tool results.";
+                if (root.TryGetProperty("final_prompt", out var fpProp))
+                {
+                    finalPromptInstruction = fpProp.GetString() ?? finalPromptInstruction;
+                }
+                
                 var toolContext = string.Join("\n\n", toolOutputs);
                 
                 // Build a clear prompt that emphasizes plain text output

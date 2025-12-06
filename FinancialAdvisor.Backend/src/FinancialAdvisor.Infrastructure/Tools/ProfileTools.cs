@@ -47,12 +47,15 @@ namespace FinancialAdvisor.Infrastructure.Tools
                 var holdingsList = portfolio?.Holdings?.Select(h => new { symbol = h.Symbol, qty = h.Quantity }).ToList() 
                                    ?? new List<object>().Select(x => new { symbol = "", qty = 0 }).ToList(); // Empty anonymous list
 
+                var summary = $"User {userId} has a {strategy.Replace("_", " ")} strategy with ${cash:N0} in cash and {holdingsList.Count} active positions.";
+
                 return JsonSerializer.Serialize(new
                 {
                     user_id = userId,
                     strategy = strategy,
                     cash = cash,
-                    holdings = holdings
+                    holdings = holdings,
+                    summary = summary
                 });
             }
             catch (Exception ex)

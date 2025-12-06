@@ -8,7 +8,7 @@ export default function Home() {
       <div className="grid grid-cols-1 md:grid-cols-12 gap-6 h-full">
         {/* Left Column: What's New & Assets */}
         <div className="md:col-span-4 flex flex-col gap-6">
-          <div className="flex-1">
+          <div className="min-h-[320px]">
             <WhatsNewPanel />
           </div>
           <div className="flex-1">

@@ -9,7 +9,7 @@ export async function POST(request: NextRequest) {
 
       // Forward the request to the backend
       // Use environment variable or default to localhost:5000
-      const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+      const backendUrl = process.env.BACKEND_URL || 'http://localhost:5002';
       const backendResponse = await fetch(`${backendUrl}/api/chat/stream`, {
          method: 'POST',
          headers: {
