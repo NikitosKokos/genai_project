@@ -16,6 +16,7 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
         private readonly IContextService _contextService;
         private readonly IPromptService _promptService;
         private readonly ILLMService _llmService;
+        private readonly IMarketDataService _marketDataService;
         private readonly IEnumerable<ITool> _tools;
         private readonly ILogger<AgentOrchestrator> _logger;
         
@@ -23,14 +24,29 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
             IContextService contextService,
             IPromptService promptService,
             ILLMService llmService,
+            IMarketDataService marketDataService,
             IEnumerable<ITool> tools,
             ILogger<AgentOrchestrator> logger)
         {
             _contextService = contextService;
             _promptService = promptService;
             _llmService = llmService;
+            _marketDataService = marketDataService;
             _tools = tools;
             _logger = logger;
+        }
+
+        /// <summary>
+        /// Checks if the user query is a confirmation (e.g., "confirm", "yes", "proceed").
+        /// </summary>
+        private bool IsConfirmation(string userQuery)
+        {
+            if (string.IsNullOrWhiteSpace(userQuery))
+                return false;
+
+            var queryLower = userQuery.ToLowerInvariant().Trim();
+            var confirmKeywords = new[] { "confirm", "yes", "y", "proceed", "execute", "go ahead", "ok", "okay", "do it" };
+            return confirmKeywords.Any(keyword => queryLower == keyword || queryLower.StartsWith(keyword + " "));
         }
 
         /// <summary>
@@ -67,6 +83,12 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
                 "available cash", "my strategy", "risk profile"
             };
 
+            // Keywords that indicate trade requests
+            var tradeKeywords = new[]
+            {
+                "buy", "sell", "purchase", "trade", "order"
+            };
+
             // Check if query contains any price-related keywords
             if (priceKeywords.Any(keyword => queryLower.Contains(keyword)))
             {
@@ -81,6 +103,12 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
 
             // Check if query contains profile-related keywords
             if (profileKeywords.Any(keyword => queryLower.Contains(keyword)))
+            {
+                return true;
+            }
+
+            // Check if query contains trade keywords (buy/sell)
+            if (tradeKeywords.Any(keyword => queryLower.Contains(keyword)))
             {
                 return true;
             }
@@ -133,6 +161,129 @@ namespace FinancialAdvisor.Infrastructure.Services.RAG
         public async IAsyncEnumerable<string> ProcessQueryStreamAsync(string userQuery, string sessionId, [EnumeratorCancellation] System.Threading.CancellationToken cancellationToken = default, bool enableReasoning = false, int documentCount = 3)
         {
             _logger.LogInformation($"[{sessionId}] Processing Agent Query: {userQuery}");
+            
+            // Check for trade confirmation first
+            var pendingTrade = await _contextService.GetPendingTradeAsync(sessionId);
+            if (pendingTrade != null && IsConfirmation(userQuery))
+            {
+                yield return "<status>Validating trade...</status>";
+                
+                // Re-validate balance/holdings before executing (outside try-catch to avoid yield issues)
+                string result = string.Empty;
+                bool success = false;
+                Exception? executionError = null;
+                bool validationPassed = false;
+                
+                // Pre-execution validation (outside try-catch to avoid yield issues)
+                try
+                {
+                    if (pendingTrade.Action == "BUY")
+                    {
+                        // Re-check portfolio and balance before executing
+                        var portfolioForValidation = await _contextService.GetPortfolioAsync(sessionId);
+                        if (portfolioForValidation == null)
+                        {
+                            throw new InvalidOperationException("Portfolio not found");
+                        }
+                        
+                        var totalCost = pendingTrade.Price * pendingTrade.Quantity;
+                        if (portfolioForValidation.CashBalance < totalCost)
+                        {
+                            throw new InvalidOperationException(
+                                $"❌ Trade cancelled: Insufficient funds.\n\nRequired: ${totalCost:N2}\nAvailable: ${portfolioForValidation.CashBalance:N2}\n\nYour balance is not sufficient to complete this purchase. Please add funds or reduce the quantity.");
+                        }
+                        
+                        validationPassed = true;
+                    }
+                    else // SELL
+                    {
+                        // Re-check holdings before executing
+                        var portfolioForValidation = await _contextService.GetPortfolioAsync(sessionId);
+                        if (portfolioForValidation == null)
+                        {
+                            throw new InvalidOperationException("Portfolio not found");
+                        }
+                        
+                        var holding = portfolioForValidation.Holdings?.FirstOrDefault(h => 
+                            string.Equals(h.Symbol, pendingTrade.Symbol, StringComparison.OrdinalIgnoreCase));
+                        
+                        if (holding == null || holding.Quantity < pendingTrade.Quantity)
+                        {
+                            var available = holding?.Quantity ?? 0;
+                            throw new InvalidOperationException(
+                                $"❌ Trade cancelled: Insufficient shares.\n\nRequested: {pendingTrade.Quantity} shares of {pendingTrade.Symbol}\nAvailable: {available} shares\n\nYou don't have enough shares to complete this sale.");
+                        }
+                        
+                        validationPassed = true;
+                    }
+                }
+                catch (Exception validationEx)
+                {
+                    _logger.LogWarning(validationEx, $"Trade validation failed for {sessionId}");
+                    executionError = validationEx;
+                    await _contextService.ClearPendingTradeAsync(sessionId);
+                }
+                
+                // Execute trade only if validation passed (yield outside try-catch)
+                if (validationPassed)
+                {
+                    yield return "<status>Executing confirmed trade...</status>";
+                    
+                    try
+                    {
+                        if (pendingTrade.Action == "BUY")
+                        {
+                            await _contextService.ExecuteBuyTradeAsync(sessionId, pendingTrade.Symbol, pendingTrade.Quantity, pendingTrade.Price);
+                            result = $"✅ Trade executed: Bought {pendingTrade.Quantity} shares of {pendingTrade.Symbol} at ${pendingTrade.Price:N2} per share. Total cost: ${pendingTrade.TotalAmount:N2}.";
+                        }
+                        else
+                        {
+                            await _contextService.ExecuteSellTradeAsync(sessionId, pendingTrade.Symbol, pendingTrade.Quantity, pendingTrade.Price);
+                            result = $"✅ Trade executed: Sold {pendingTrade.Quantity} shares of {pendingTrade.Symbol} at ${pendingTrade.Price:N2} per share. Total proceeds: ${pendingTrade.TotalAmount:N2}.";
+                        }
+                        
+                        // Record trade
+                        var trade = new Trade
+                        {
+                            Symbol = pendingTrade.Symbol,
+                            Action = pendingTrade.Action,
+                            Quantity = pendingTrade.Quantity,
+                            Price = pendingTrade.Price,
+                            TotalAmount = pendingTrade.TotalAmount,
+                            ExecutedAt = DateTime.UtcNow,
+                            Reasoning = "User confirmed trade"
+                        };
+                        await _contextService.RecordTradeAsync(sessionId, trade);
+                        
+                        // Clear pending trade
+                        await _contextService.ClearPendingTradeAsync(sessionId);
+                        success = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, $"Error executing confirmed trade for {sessionId}");
+                        executionError = ex;
+                        await _contextService.ClearPendingTradeAsync(sessionId);
+                    }
+                }
+                
+                // Yield results outside try-catch
+                if (success)
+                {
+                    yield return $"<response>{result}</response>";
+                    await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "user", Content = userQuery });
+                    await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "assistant", Content = result });
+                }
+                else
+                {
+                    var errorMsg = executionError?.Message ?? "Unknown error occurred";
+                    yield return $"<response>{errorMsg}</response>";
+                    await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "user", Content = userQuery });
+                    await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "assistant", Content = errorMsg });
+                }
+                yield break;
+            }
+            
             yield return "<status>Analyzing request...</status>";
 
             // 1. Gather Initial Context (Parallel for better performance)
@@ -435,6 +586,83 @@ Your response:";
                     var args = step.GetProperty("args");
                     var argsJson = args.ToString();
                     var why = step.TryGetProperty("why", out var whyProp) ? whyProp.GetString() : "";
+
+                    // Handle trade tools specially - require confirmation
+                    if (toolName == "buy_stock" || toolName == "sell_stock")
+                    {
+                        yield return $"<status>Preparing trade confirmation...</status>";
+                        
+                        // Prepare trade confirmation (outside try-catch to avoid yield issues)
+                        string confirmationMsg = null;
+                        string errorMsg = null;
+                        bool shouldContinue = false;
+                        
+                        try
+                        {
+                            using var argsDoc = JsonDocument.Parse(argsJson);
+                            var symbol = argsDoc.RootElement.GetProperty("symbol").GetString();
+                            var qty = argsDoc.RootElement.GetProperty("qty").GetInt32();
+                            var userId = argsDoc.RootElement.TryGetProperty("user_id", out var userIdProp) 
+                                ? userIdProp.GetString() 
+                                : sessionId; // Use sessionId as fallback
+                            
+                            // Get current price for the trade
+                            var marketData = await _marketDataService.GetMarketDataAsync(new List<string> { symbol ?? "" });
+                            if (!marketData.Any() || string.IsNullOrWhiteSpace(symbol))
+                            {
+                                errorMsg = $"Could not fetch price for {symbol}";
+                                shouldContinue = true;
+                            }
+                            else
+                            {
+                                var price = marketData.First().Price;
+                                var totalAmount = price * qty;
+                                var action = toolName == "buy_stock" ? "BUY" : "SELL";
+                                
+                                // Create pending trade
+                                var pendingTradeForConfirmation = new PendingTrade
+                                {
+                                    Action = action,
+                                    Symbol = symbol,
+                                    Quantity = qty,
+                                    Price = price,
+                                    TotalAmount = totalAmount,
+                                    CreatedAt = DateTime.UtcNow
+                                };
+                                
+                                await _contextService.SetPendingTradeAsync(sessionId, pendingTradeForConfirmation);
+                                
+                                // Generate confirmation message
+                                confirmationMsg = action == "BUY"
+                                    ? $"⚠️ **Trade Confirmation Required**\n\nYou are about to **BUY {qty} shares** of {symbol} at **${price:N2}** per share.\n\n**Total Cost: ${totalAmount:N2}**\n\nTo confirm this trade, please reply with **\"confirm\"** or **\"yes\"**. To cancel, simply ignore or ask something else."
+                                    : $"⚠️ **Trade Confirmation Required**\n\nYou are about to **SELL {qty} shares** of {symbol} at **${price:N2}** per share.\n\n**Total Proceeds: ${totalAmount:N2}**\n\nTo confirm this trade, please reply with **\"confirm\"** or **\"yes\"**. To cancel, simply ignore or ask something else.";
+                                
+                                toolOutputs.Add($"Trade pending confirmation: {action} {qty} {symbol} @ ${price:N2}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, $"Error preparing trade confirmation for {sessionId}");
+                            errorMsg = ex.Message;
+                            shouldContinue = true;
+                        }
+                        
+                        // Yield results outside try-catch
+                        if (errorMsg != null)
+                        {
+                            toolOutputs.Add($"Tool '{toolName}' error: {errorMsg}");
+                            if (shouldContinue)
+                                continue;
+                        }
+                        else if (confirmationMsg != null)
+                        {
+                            yield return $"<response>{confirmationMsg}</response>";
+                            // Save messages and stop - wait for user confirmation
+                            await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "user", Content = userQuery });
+                            await _contextService.AddChatMessageAsync(sessionId, new ChatMessage { Role = "assistant", Content = confirmationMsg });
+                            yield break; // Stop execution - wait for confirmation
+                        }
+                    }
 
                     yield return $"<status>Calling {toolName}...</status>";
                     _logger.LogInformation($"[{sessionId}] Tool Call: {toolName} | Reason: {why}");

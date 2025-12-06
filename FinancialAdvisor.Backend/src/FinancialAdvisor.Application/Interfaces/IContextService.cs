@@ -20,5 +20,15 @@ namespace FinancialAdvisor.Application.Interfaces
 
         // Metadata
         Task UpdateMetadataAsync(string sessionId, string symbol = null, string tool = null);
+        
+        // Trade Execution
+        Task ExecuteBuyTradeAsync(string sessionId, string symbol, int quantity, decimal price);
+        Task ExecuteSellTradeAsync(string sessionId, string symbol, int quantity, decimal price);
+        Task RecordTradeAsync(string sessionId, Trade trade);
+        
+        // Pending Trade (for confirmation)
+        Task SetPendingTradeAsync(string sessionId, PendingTrade pendingTrade);
+        Task<PendingTrade> GetPendingTradeAsync(string sessionId);
+        Task ClearPendingTradeAsync(string sessionId);
     }
 }

@@ -73,6 +73,30 @@ namespace FinancialAdvisor.Application.Models
         
         [BsonElement("tool_call_count")]
         public int ToolCallCount { get; set; }
+        
+        [BsonElement("pending_trade")]
+        public PendingTrade PendingTrade { get; set; }
+    }
+    
+    public class PendingTrade
+    {
+        [BsonElement("action")]
+        public string Action { get; set; } // "BUY" or "SELL"
+        
+        [BsonElement("symbol")]
+        public string Symbol { get; set; }
+        
+        [BsonElement("quantity")]
+        public int Quantity { get; set; }
+        
+        [BsonElement("price")]
+        public decimal Price { get; set; }
+        
+        [BsonElement("total_amount")]
+        public decimal TotalAmount { get; set; }
+        
+        [BsonElement("created_at")]
+        public DateTime CreatedAt { get; set; }
     }
 
     public class PortfolioContext

@@ -206,5 +206,178 @@ This context should be used to ground all financial advice.";
                 s => s.SessionId == sessionId, 
                 session);
         }
+
+        public async Task ExecuteBuyTradeAsync(string sessionId, string symbol, int quantity, decimal price)
+        {
+            var portfolio = await GetPortfolioAsync(sessionId);
+            if (portfolio == null)
+            {
+                // Create new portfolio
+                portfolio = new PortfolioSnapshot
+                {
+                    SessionId = sessionId,
+                    Holdings = new List<Holding>(),
+                    CashBalance = 100000, // Default starting cash
+                    TotalValue = 100000,
+                    CreatedAt = DateTime.UtcNow
+                };
+            }
+
+            var totalCost = price * quantity;
+            
+            // Validate sufficient funds BEFORE executing trade
+            if (portfolio.CashBalance < totalCost)
+            {
+                throw new InvalidOperationException(
+                    $"Insufficient funds. Required: ${totalCost:N2}, Available: ${portfolio.CashBalance:N2}");
+            }
+            
+            // Update cash balance
+            portfolio.CashBalance -= totalCost;
+            
+            // Update or add holding
+            var holding = portfolio.Holdings?.FirstOrDefault(h => 
+                string.Equals(h.Symbol, symbol, StringComparison.OrdinalIgnoreCase));
+            
+            if (holding == null)
+            {
+                if (portfolio.Holdings == null)
+                    portfolio.Holdings = new List<Holding>();
+                
+                portfolio.Holdings.Add(new Holding
+                {
+                    Symbol = symbol,
+                    Quantity = quantity,
+                    AvgCost = price,
+                    CurrentPrice = price
+                });
+            }
+            else
+            {
+                // Calculate new average cost
+                var totalCostOld = holding.AvgCost * holding.Quantity;
+                var totalCostNew = totalCostOld + totalCost;
+                var totalQuantity = holding.Quantity + quantity;
+                holding.AvgCost = totalCostNew / totalQuantity;
+                holding.Quantity = totalQuantity;
+                holding.CurrentPrice = price;
+            }
+
+            // Update total value
+            portfolio.TotalValue = portfolio.CashBalance + 
+                (portfolio.Holdings?.Sum(h => h.Quantity * h.CurrentPrice) ?? 0);
+            
+            portfolio.CreatedAt = DateTime.UtcNow;
+
+            // Upsert portfolio
+            var filter = Builders<PortfolioSnapshot>.Filter.Eq("session_id", sessionId);
+            var options = new ReplaceOptions { IsUpsert = true };
+            await _mongoContext.PortfolioSnapshots.ReplaceOneAsync(filter, portfolio, options);
+            
+            _logger.LogInformation($"[{sessionId}] BUY executed: {quantity} {symbol} @ ${price:N2}, New cash: ${portfolio.CashBalance:N2}");
+        }
+
+        public async Task ExecuteSellTradeAsync(string sessionId, string symbol, int quantity, decimal price)
+        {
+            var portfolio = await GetPortfolioAsync(sessionId);
+            if (portfolio == null || portfolio.Holdings == null)
+            {
+                throw new InvalidOperationException("Portfolio not found or has no holdings");
+            }
+
+            var totalProceeds = price * quantity;
+            
+            // Update cash balance
+            portfolio.CashBalance += totalProceeds;
+            
+            // Update holding
+            var holding = portfolio.Holdings.FirstOrDefault(h => 
+                string.Equals(h.Symbol, symbol, StringComparison.OrdinalIgnoreCase));
+            
+            if (holding == null || holding.Quantity < quantity)
+            {
+                throw new InvalidOperationException($"Insufficient shares of {symbol}");
+            }
+
+            holding.Quantity -= quantity;
+            holding.CurrentPrice = price;
+
+            // Remove holding if quantity is zero
+            if (holding.Quantity == 0)
+            {
+                portfolio.Holdings.Remove(holding);
+            }
+
+            // Update total value
+            portfolio.TotalValue = portfolio.CashBalance + 
+                (portfolio.Holdings?.Sum(h => h.Quantity * h.CurrentPrice) ?? 0);
+            
+            portfolio.CreatedAt = DateTime.UtcNow;
+
+            // Update portfolio
+            var filter = Builders<PortfolioSnapshot>.Filter.Eq("session_id", sessionId);
+            await _mongoContext.PortfolioSnapshots.ReplaceOneAsync(filter, portfolio);
+            
+            _logger.LogInformation($"[{sessionId}] SELL executed: {quantity} {symbol} @ ${price:N2}, New cash: ${portfolio.CashBalance:N2}");
+        }
+
+        public async Task RecordTradeAsync(string sessionId, Trade trade)
+        {
+            var tradingHistory = await _mongoContext.TradingHistory
+                .Find(t => t.SessionId == sessionId)
+                .FirstOrDefaultAsync();
+
+            if (tradingHistory == null)
+            {
+                tradingHistory = new TradingHistory
+                {
+                    SessionId = sessionId,
+                    Trades = new List<Trade> { trade }
+                };
+                await _mongoContext.TradingHistory.InsertOneAsync(tradingHistory);
+            }
+            else
+            {
+                if (tradingHistory.Trades == null)
+                    tradingHistory.Trades = new List<Trade>();
+                
+                tradingHistory.Trades.Add(trade);
+                var update = Builders<TradingHistory>.Update.Set(t => t.Trades, tradingHistory.Trades);
+                await _mongoContext.TradingHistory.UpdateOneAsync(
+                    t => t.SessionId == sessionId,
+                    update);
+            }
+        }
+
+        public async Task SetPendingTradeAsync(string sessionId, PendingTrade pendingTrade)
+        {
+            var session = await GetSessionAsync(sessionId);
+            if (session.Metadata == null)
+                session.Metadata = new ConversationMetadata();
+            
+            session.Metadata.PendingTrade = pendingTrade;
+            
+            await _mongoContext.Sessions.ReplaceOneAsync(
+                s => s.SessionId == sessionId,
+                session);
+        }
+
+        public async Task<PendingTrade> GetPendingTradeAsync(string sessionId)
+        {
+            var session = await GetSessionAsync(sessionId);
+            return session.Metadata?.PendingTrade;
+        }
+
+        public async Task ClearPendingTradeAsync(string sessionId)
+        {
+            var session = await GetSessionAsync(sessionId);
+            if (session.Metadata != null)
+            {
+                session.Metadata.PendingTrade = null;
+                await _mongoContext.Sessions.ReplaceOneAsync(
+                    s => s.SessionId == sessionId,
+                    session);
+            }
+        }
     }
 }
